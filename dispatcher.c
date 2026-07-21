@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <inttypes.h>
 #include <sys/ioctl.h>
+#include <stdint.h>
 #include "obd.h"
 
 #define OBD_WATCHDOG_INIT_TIMEOUT 30  /* 30 seconds startup grace period for heavy PJSIP initialization */
@@ -160,11 +161,62 @@ static const char *mux_extract_call_id(const char *payload, size_t len, size_t *
 }
 
 /* ================================================================== */
+/* Raw packet queue — decouples fast UDP drain from slow routing       */
+/* ================================================================== */
+#ifndef OBD_PKTQ_SIZE
+#define OBD_PKTQ_SIZE  524288  /* power of 2; ~500K slots, handles sustained 50K+ CPS bursts */
+#endif
+#define PKTQ_SIZE  OBD_PKTQ_SIZE
+/* 512 bytes covers any realistic JSON OBD request; avoids 2GB+ BSS with large slot counts */
+#define PKTQ_SLOT_SIZE 512
+typedef struct { char data[PKTQ_SLOT_SIZE]; int len; } RawPkt;
+typedef struct {
+    RawPkt           *slots;   /* heap-allocated — keeps BSS small regardless of PKTQ_SIZE */
+    _Atomic uint64_t head;
+    _Atomic uint64_t tail;
+} PktQueue;
+static PktQueue          g_pktq;
+static _Atomic uint64_t  g_pktq_dropped = 0;
+
+#include <semaphore.h>
+static sem_t g_pktq_sem;  /* routing threads sleep here when queue is empty */
+
+static int pktq_push(const char *data, int len)
+{
+    if (len > PKTQ_SLOT_SIZE - 1) len = PKTQ_SLOT_SIZE - 1;  /* truncate oversized; JSON requests are always small */
+    uint64_t head = atomic_load_explicit(&g_pktq.head, memory_order_relaxed);
+    uint64_t tail = atomic_load_explicit(&g_pktq.tail, memory_order_acquire);
+    if (head - tail >= PKTQ_SIZE) return -1;
+    RawPkt *slot = &g_pktq.slots[head & (PKTQ_SIZE - 1)];
+    memcpy(slot->data, data, len);
+    slot->data[len] = '\0';
+    slot->len = len;
+    atomic_store_explicit(&g_pktq.head, head + 1, memory_order_release);
+    sem_post(&g_pktq_sem);  /* wake one routing thread */
+    return 0;
+}
+
+static int pktq_pop(RawPkt *out)
+{
+    uint64_t tail, head;
+    for (;;) {
+        tail = atomic_load_explicit(&g_pktq.tail, memory_order_relaxed);
+        head = atomic_load_explicit(&g_pktq.head, memory_order_acquire);
+        if (tail >= head) return -1;
+        if (atomic_compare_exchange_weak_explicit(&g_pktq.tail, &tail, tail + 1,
+                memory_order_acq_rel, memory_order_relaxed))
+            break;
+    }
+    *out = g_pktq.slots[tail & (PKTQ_SIZE - 1)];
+    return 0;
+}
+
+/* ================================================================== */
 /* Globals & Signal Handlers                                           */
 /* ================================================================== */
 static volatile sig_atomic_t g_running = 1;
 static _Atomic int g_worker_inflight[OBD_NUM_WORKERS];
-static int g_next_worker = 0;
+static _Atomic int g_next_worker = 0;
 static int g_worker_socks[OBD_NUM_WORKERS];
 static pid_t g_worker_pids[OBD_NUM_WORKERS];
 static time_t g_worker_heartbeat[OBD_NUM_WORKERS];
@@ -213,7 +265,7 @@ static int reconnect_worker_sock(int worker_id)
     if (rc == 0) {
         atomic_store(&g_worker_fail_count[worker_id], 0);
         atomic_store(&g_worker_circuit_open[worker_id], 0);
-        LOG("dispatcher", "", "worker_reconnected", ",\"worker\":%d", worker_id);
+        LOG(OBD_LOG_INFO, "dispatcher", "", "worker_reconnected", ",\"worker\":%d", worker_id);
     }
     return rc;
 }
@@ -223,7 +275,7 @@ static void trip_circuit_breaker(int worker_id)
 {
     atomic_store(&g_worker_circuit_open[worker_id], 1);
     g_worker_circuit_trip_time[worker_id] = time(NULL);
-    LOG("dispatcher", "", "circuit_breaker_open",
+    LOG(OBD_LOG_WARN, "dispatcher", "", "circuit_breaker_open",
         ",\"worker\":%d,\"pid\":%d,\"failures\":%d",
         worker_id, g_worker_pids[worker_id],
         atomic_load(&g_worker_fail_count[worker_id]));
@@ -274,7 +326,7 @@ static void stop_worker_pid(int worker_id, int force_kill)
         int sig = force_kill ? SIGKILL : SIGTERM;
         kill(pid, sig);
     } else if (errno != ESRCH) {
-        LOG("dispatcher", "", "worker_signal_failed",
+        LOG(OBD_LOG_WARN, "dispatcher", "", "worker_signal_failed",
             ",\"worker\":%d,\"pid\":%d,\"reason\":\"%s\"",
             worker_id, pid, strerror(errno));
     }
@@ -353,16 +405,18 @@ static void *watchdog_thread(void *arg)
                 if (inf > max_inf) max_inf = inf;
                 total_inf += inf;
             }
-            LOG("dispatcher", "", "dispatcher_rate",
+            LOG(OBD_LOG_INFO, "dispatcher", "", "dispatcher_rate",
                 ",\"recv_total\":%" PRIu64
                 ",\"routed_total\":%" PRIu64
                 ",\"drop_total\":%" PRIu64
+                ",\"pktq_dropped\":%" PRIu64
                 ",\"recv_per_sec\":%" PRIu64
                 ",\"routed_per_sec\":%" PRIu64
                 ",\"inflight_total\":%d"
                 ",\"inflight_min\":%d"
                 ",\"inflight_max\":%d",
                 cur_recv, cur_routed, cur_drop,
+                atomic_load(&g_pktq_dropped),
                 recv_delta / (uint64_t)elapsed,
                 routed_delta / (uint64_t)elapsed,
                 total_inf, min_inf, max_inf);
@@ -380,7 +434,7 @@ static void *watchdog_thread(void *arg)
                 if (g_worker_pids[i] > 0 && kill(g_worker_pids[i], 0) == 0) {
                     /* Worker process is alive — just reconnect the socket */
                     if (reconnect_worker_sock(i) == 0) {
-                        LOG("dispatcher", "", "circuit_breaker_healed",
+                        LOG(OBD_LOG_INFO, "dispatcher", "", "circuit_breaker_healed",
                             ",\"worker\":%d,\"pid\":%d", i, g_worker_pids[i]);
                     }
                 }
@@ -406,7 +460,7 @@ static void *watchdog_thread(void *arg)
                     ioctl(g_worker_socks[i], FIONREAD, &unread_bytes);
                     lost_requests = unread_bytes / (int)sizeof(OBDRequest);
                 }
-                LOG("dispatcher", "", "worker_dead",
+                LOG(OBD_LOG_ERROR, "dispatcher", "", "worker_dead",
                     ",\"worker\":%d,\"pid\":%d,\"last_seen_sec\":%ld,\"exit_code\":%d,\"signal\":%d,\"lost_requests\":%d,\"action\":\"restart\"",
                     i, g_worker_pids[i], (long)(now - g_worker_heartbeat[i]),
                     exit_code, crash_signal, lost_requests);
@@ -418,7 +472,7 @@ static void *watchdog_thread(void *arg)
 
                 pid_t pid = spawn_worker_from_cfg(i);
                 if (pid < 0) {
-                    LOG("dispatcher", "", "worker_restart_failed",
+                    LOG(OBD_LOG_ERROR, "dispatcher", "", "worker_restart_failed",
                         ",\"worker\":%d,\"reason\":\"%s\"",
                         i, strerror(errno));
                     continue;
@@ -438,12 +492,12 @@ static void *watchdog_thread(void *arg)
                     }
                 }
                 if (!connected) {
-                    LOG("dispatcher", "", "worker_reconnect_failed_after_restart",
+                    LOG(OBD_LOG_ERROR, "dispatcher", "", "worker_reconnect_failed_after_restart",
                         ",\"worker\":%d,\"pid\":%d", i, pid);
                     trip_circuit_breaker(i);
                 }
 
-                LOG("dispatcher", "", "worker_restarted",
+                LOG(OBD_LOG_WARN, "dispatcher", "", "worker_restarted",
                     ",\"worker\":%d,\"pid\":%d,\"sip_port\":%d,\"heartbeat_port\":%d,\"connected\":%d",
                     i, pid, g_worker_cfgs[i].sip_port, g_worker_cfgs[i].heartbeat_port, connected);
             }
@@ -463,7 +517,7 @@ static void *heartbeat_recv_thread(void *arg)
     hb_addr.sin_port = htons(g_heartbeat_port);
     hb_addr.sin_addr.s_addr = INADDR_ANY;
     if (bind(hb_sock, (struct sockaddr *)&hb_addr, sizeof(hb_addr)) < 0) {
-        LOG("dispatcher", "", "heartbeat_bind_failed",
+        LOG(OBD_LOG_ERROR, "dispatcher", "", "heartbeat_bind_failed",
             ",\"port\":%d,\"reason\":\"%s\"",
             g_heartbeat_port, strerror(errno));
         close(hb_sock);
@@ -504,7 +558,7 @@ static void *sip_mux_thread(void *arg)
     int proxy_port = g_worker_cfgs[0].proxy_port;
     int mux_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (mux_sock < 0) {
-        LOG("dispatcher", "", "mux_socket_create_failed", ",\"reason\":\"%s\"", strerror(errno));
+        LOG(OBD_LOG_ERROR, "dispatcher", "", "mux_socket_create_failed", ",\"reason\":\"%s\"", strerror(errno));
         return NULL;
     }
 
@@ -526,13 +580,13 @@ static void *sip_mux_thread(void *arg)
     bind_addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(mux_sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
-        LOG("dispatcher", "", "mux_bind_failed",
+        LOG(OBD_LOG_ERROR, "dispatcher", "", "mux_bind_failed",
             ",\"port\":%d,\"reason\":\"%s\"", mux_port, strerror(errno));
         close(mux_sock);
         return NULL;
     }
 
-    LOG("dispatcher", "", "mux_started", ",\"bind_ip\":\"0.0.0.0\",\"port\":%d", mux_port);
+    LOG(OBD_LOG_INFO, "dispatcher", "", "mux_started", ",\"bind_ip\":\"0.0.0.0\",\"port\":%d", mux_port);
 
     /* Prep carrier target address for outbound delivery routing */
     struct sockaddr_in carrier_addr;
@@ -541,7 +595,7 @@ static void *sip_mux_thread(void *arg)
     carrier_addr.sin_port = htons(proxy_port);
     inet_pton(AF_INET, g_worker_cfgs[0].default_proxy, &carrier_addr.sin_addr);
     printf("carrier_addr.sin_port %d",carrier_addr.sin_port);
-LOG("dispatcher", "", "carrier_addr.sin_port", ",\"bind_ip\":\"0.0.0.0\",\"port\":%d", carrier_addr.sin_port);
+LOG(OBD_LOG_DEBUG, "dispatcher", "", "carrier_addr.sin_port", ",\"bind_ip\":\"0.0.0.0\",\"port\":%d", carrier_addr.sin_port);
     char buf[4096];
     struct sockaddr_in src_addr;
     socklen_t slen;
@@ -588,6 +642,90 @@ LOG("dispatcher", "", "carrier_addr.sin_port", ",\"bind_ip\":\"0.0.0.0\",\"port\
     }
 
     close(mux_sock);
+    return NULL;
+}
+
+/* Routing thread: parse + dedup + route — all slow work off the recv path */
+static void *routing_thread(void *arg)
+{
+    (void)arg;
+    RawPkt pkt;
+
+    while (g_running) {
+        /* Sleep until a packet arrives — eliminates busy-poll CPU burn */
+        if (pktq_pop(&pkt) != 0) {
+            sem_wait(&g_pktq_sem);
+            continue;
+        }
+
+        if (!g_running) break;
+
+        OBDRequest req;
+        memset(&req, 0, sizeof(req));
+        req.timeout_sec = OBD_DEFAULT_TIMEOUT;
+
+        json_get(pkt.data, "callingMSISDN", req.calling_msisdn, sizeof(req.calling_msisdn));
+        json_get(pkt.data, "calledMSISDN",  req.called_msisdn,  sizeof(req.called_msisdn));
+        json_get(pkt.data, "requestId",     req.request_id,     sizeof(req.request_id));
+        json_get(pkt.data, "destID",        req.dest_id,        sizeof(req.dest_id));
+
+        char timeout_str[16] = "";
+        if (json_get(pkt.data, "timeout", timeout_str, sizeof(timeout_str)) == 0 && timeout_str[0]) {
+            char *end;
+            long val = strtol(timeout_str, &end, 10);
+            if (end != timeout_str && *end == '\0' && val > 0 && val <= INT_MAX)
+                req.timeout_sec = (int)val;
+        }
+
+        if (!req.called_msisdn[0] || !req.request_id[0]) continue;
+
+        atomic_fetch_add(&g_recv_total, 1);
+        LOG(OBD_LOG_INFO, "dispatcher", req.request_id, "received",
+            ",\"called\":\"%s\",\"calling\":\"%s\"",
+            req.called_msisdn, req.calling_msisdn);
+
+        if (dedup_check_and_set(req.request_id)) {
+            LOG(OBD_LOG_DEBUG, "dispatcher", req.request_id, "dedup_drop", "");
+            continue;
+        }
+
+        int w = -1;
+        time_t current_time = time(NULL);
+
+        /* O(1) round-robin: atomic increment wraps across all workers.
+         * Skip circuit-open or dead workers with a bounded retry. */
+        for (int attempt = 0; attempt < OBD_NUM_WORKERS; attempt++) {
+            int idx = (int)(atomic_fetch_add(&g_next_worker, 1) % OBD_NUM_WORKERS);
+            if (atomic_load(&g_worker_circuit_open[idx])) continue;
+            if (g_worker_pids[idx] > 0 &&
+                current_time - g_worker_heartbeat[idx] <= OBD_WATCHDOG_TIMEOUT) {
+                w = idx;
+                break;
+            }
+        }
+
+        if (w != -1) {
+            ssize_t sent = send(g_worker_socks[w], &req, sizeof(req), MSG_DONTWAIT);
+            if (sent > 0) {
+                atomic_fetch_add(&g_worker_inflight[w], 1);
+                atomic_store(&g_worker_fail_count[w], 0);
+                atomic_fetch_add(&g_routed_total, 1);
+                LOG(OBD_LOG_INFO, "dispatcher", req.request_id, "routed",
+                    ",\"worker\":%d", w);
+            } else {
+                int err = errno;
+                int fails = atomic_fetch_add(&g_worker_fail_count[w], 1) + 1;
+                atomic_fetch_add(&g_drop_total, 1);
+                LOG(OBD_LOG_WARN, "dispatcher", req.request_id, "route_failed",
+                    ",\"worker\":%d,\"errno\":%d,\"reason\":\"%s\",\"failures\":%d",
+                    w, err, strerror(err), fails);
+                if (fails >= CB_MAX_FAILURES) trip_circuit_breaker(w);
+            }
+        } else {
+            atomic_fetch_add(&g_drop_total, 1);
+            LOG(OBD_LOG_WARN, "dispatcher", req.request_id, "no_workers_available", "");
+        }
+    }
     return NULL;
 }
 
@@ -641,7 +779,7 @@ void dispatcher_run(const char *local_ip, int listen_port,
             usleep(100000); /* 100ms retry — wait for worker to bind */
         }
         if (!connected) {
-            LOG("dispatcher", "", "worker_socket_connect_failed",
+            LOG(OBD_LOG_ERROR, "dispatcher", "", "worker_socket_connect_failed",
                 ",\"worker\":%d,\"path\":\"%s\",\"reason\":\"%s\"",
                 i, addr.sun_path, strerror(errno));
             trip_circuit_breaker(i);
@@ -651,6 +789,18 @@ void dispatcher_run(const char *local_ip, int listen_port,
     /* Initialize the SIP-MUX table only when carrier traffic is shared on one SIP port */
     if (use_mux)
         mux_init();
+
+    sem_init(&g_pktq_sem, 0, 0);  /* routing threads block here when queue empty */
+
+    /* Heap-allocate pktq slots — 524288 * 512 = 256MB on heap, not BSS */
+    g_pktq.slots = calloc(PKTQ_SIZE, sizeof(RawPkt));
+    if (!g_pktq.slots) {
+        LOG(OBD_LOG_ERROR, "dispatcher", "", "pktq_alloc_failed",
+            ",\"slots\":%d,\"slot_bytes\":%zu", PKTQ_SIZE, sizeof(RawPkt));
+        exit(1);
+    }
+    atomic_store(&g_pktq.head, 0);
+    atomic_store(&g_pktq.tail, 0);
 
     /* Init dedup (OPT8) */
     dedup_init();
@@ -662,7 +812,7 @@ void dispatcher_run(const char *local_ip, int listen_port,
     if (use_mux) {
         pthread_create(&mux_tid, NULL, sip_mux_thread, NULL);
     } else {
-        LOG("dispatcher", "", "mux_disabled", ",\"mode\":\"worker_ports\"");
+        LOG(OBD_LOG_INFO, "dispatcher", "", "mux_disabled", ",\"mode\":\"worker_ports\"");
     }
 
     /* Bind UDP listen socket for JSON requests on port 9090 */
@@ -686,130 +836,86 @@ void dispatcher_run(const char *local_ip, int listen_port,
     addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        LOG("dispatcher", "", "listen_bind_failed",
+        LOG(OBD_LOG_ERROR, "dispatcher", "", "listen_bind_failed",
             ",\"port\":%d,\"reason\":\"%s\"",
             listen_port, strerror(errno));
         exit(1);
     }
 
-    LOG("dispatcher", "", "listening",
+    LOG(OBD_LOG_INFO, "dispatcher", "", "listening",
         ",\"bind_ip\":\"%s\",\"port\":%d,\"report_ip\":\"%s\",\"report_port\":%d,\"heartbeat_port\":%d,\"workers\":%d,\"use_mux\":\"%s\",\"advertised_sip_port\":%d",
         local_ip && local_ip[0] ? local_ip : "0.0.0.0",
         listen_port, report_ip, report_port, g_heartbeat_port, OBD_NUM_WORKERS,
         use_mux ? "yes" : "no",
         use_mux ? g_worker_cfgs[0].sip_mux_port : g_worker_cfgs[0].sip_port);
 
-    /* Main recv loop for incoming call command frames */
+    /* Routing threads: count from config (routing_threads=N in obd.conf) */
+    int num_route_threads = g_worker_cfgs[0].routing_threads;
+    if (num_route_threads < 1)  num_route_threads = 1;
+    if (num_route_threads > 64) num_route_threads = 64;
+    pthread_t *route_tids = calloc(num_route_threads, sizeof(pthread_t));
+    for (int i = 0; i < num_route_threads; i++)
+        pthread_create(&route_tids[i], NULL, routing_thread, NULL);
+    LOG(OBD_LOG_INFO, "dispatcher", "", "routing_threads_started",
+        ",\"count\":%d", num_route_threads);
+
+    /* Fast recv loop: batch-drain with recvmmsg() on Linux, recvfrom() fallback on macOS.
+     * Lock-free push to pktq — no mutex on hot path. */
+#define RECV_BATCH 64
+#ifdef __linux__
+    struct mmsghdr msgs[RECV_BATCH];
+    struct iovec   iovecs[RECV_BATCH];
+    char           bufs[RECV_BATCH][4096];
+    struct sockaddr_in src_addrs[RECV_BATCH];
+
+    for (int i = 0; i < RECV_BATCH; i++) {
+        iovecs[i].iov_base = bufs[i];
+        iovecs[i].iov_len  = sizeof(bufs[i]) - 1;
+        msgs[i].msg_hdr.msg_iov        = &iovecs[i];
+        msgs[i].msg_hdr.msg_iovlen     = 1;
+        msgs[i].msg_hdr.msg_name       = &src_addrs[i];
+        msgs[i].msg_hdr.msg_namelen    = sizeof(src_addrs[i]);
+        msgs[i].msg_hdr.msg_control    = NULL;
+        msgs[i].msg_hdr.msg_controllen = 0;
+        msgs[i].msg_hdr.msg_flags      = 0;
+    }
+
+    while (g_running) {
+        int count = recvmmsg(sock, msgs, RECV_BATCH, MSG_WAITFORONE, NULL);
+        if (count <= 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        for (int i = 0; i < count; i++) {
+            int len = (int)msgs[i].msg_len;
+            bufs[i][len] = '\0';
+            if (pktq_push(bufs[i], len) != 0)
+                atomic_fetch_add(&g_pktq_dropped, 1);
+            msgs[i].msg_hdr.msg_namelen = sizeof(src_addrs[i]);
+        }
+    }
+#else
     char buf[4096];
     while (g_running) {
-        struct sockaddr_in src;
-        socklen_t slen = sizeof(src);
-        ssize_t n = recvfrom(sock, buf, sizeof(buf) - 1, 0,
-                             (struct sockaddr *)&src, &slen);
+        ssize_t n = recvfrom(sock, buf, sizeof(buf) - 1, 0, NULL, NULL);
         if (n <= 0) {
             if (errno == EINTR) continue;
             break;
         }
         buf[n] = '\0';
-
-        /* Parse JSON */
-        OBDRequest req;
-        memset(&req, 0, sizeof(req));
-        req.timeout_sec = OBD_DEFAULT_TIMEOUT;
-
-        json_get(buf, "callingMSISDN", req.calling_msisdn, sizeof(req.calling_msisdn));
-        json_get(buf, "calledMSISDN", req.called_msisdn, sizeof(req.called_msisdn));
-        json_get(buf, "requestId", req.request_id, sizeof(req.request_id));
-        json_get(buf, "destID", req.dest_id, sizeof(req.dest_id));
-
-        char timeout_str[16] = "";
-        if (json_get(buf, "timeout", timeout_str, sizeof(timeout_str)) == 0 && timeout_str[0]) {
-            char *end;
-            long val = strtol(timeout_str, &end, 10);
-            if (end != timeout_str && *end == '\0' && val > 0 && val <= INT_MAX)
-                req.timeout_sec = (int)val;
-        }
-
-        if (!req.called_msisdn[0] || !req.request_id[0]) continue;
-
-        atomic_fetch_add(&g_recv_total, 1);
-        LOG("dispatcher", req.request_id, "received",
-            ",\"called\":\"%s\",\"calling\":\"%s\"",
-            req.called_msisdn, req.calling_msisdn);
-
-        /* Dedup check (OPT8) */
-        if (dedup_check_and_set(req.request_id)) {
-            LOG("dispatcher", req.request_id, "dedup_drop", "");
-            continue;
-        }
-
-        /* Health-aware routing with circuit breaker (Issue 1: skip broken workers).
-         * Scan starts from g_next_worker so ties are broken by round-robin,
-         * ensuring even distribution when all workers have equal inflight load. */
-        int w = -1;
-        int min_load = __INT_MAX__;
-        time_t current_time = time(NULL);
-
-        for (int i = 0; i < OBD_NUM_WORKERS; i++) {
-            int idx = (g_next_worker + i) % OBD_NUM_WORKERS;
-            /* Skip workers with tripped circuit breaker */
-            if (atomic_load(&g_worker_circuit_open[idx]))
-                continue;
-            if (g_worker_pids[idx] > 0 && current_time - g_worker_heartbeat[idx] <= OBD_WATCHDOG_TIMEOUT) {
-                int load = atomic_load(&g_worker_inflight[idx]);
-                if (load < min_load) {
-                    min_load = load;
-                    w = idx;
-                }
-            }
-        }
-
-        /* Advance round-robin pointer past the selected worker */
-        if (w != -1)
-            g_next_worker = (w + 1) % OBD_NUM_WORKERS;
-
-        /* Fallback to Round-Robin if no active heartbeats yet (skip circuit-open) */
-        if (w == -1) {
-            for (int i = 0; i < OBD_NUM_WORKERS; i++) {
-                int idx = (g_next_worker + i) % OBD_NUM_WORKERS;
-                if (atomic_load(&g_worker_circuit_open[idx]))
-                    continue;
-                if (g_worker_pids[idx] > 0) {
-                    w = idx;
-                    g_next_worker = (idx + 1) % OBD_NUM_WORKERS;
-                    break;
-                }
-            }
-        }
-
-        if (w != -1) {
-            ssize_t sent = send(g_worker_socks[w], &req, sizeof(req), MSG_DONTWAIT);
-            if (sent > 0) {
-                atomic_fetch_add(&g_worker_inflight[w], 1);
-                atomic_store(&g_worker_fail_count[w], 0);
-                atomic_fetch_add(&g_routed_total, 1);
-                LOG("dispatcher", req.request_id, "routed", ",\"worker\":%d,\"inflight\":%d", w, atomic_load(&g_worker_inflight[w]));
-            } else {
-                int err = errno;
-                int fails = atomic_fetch_add(&g_worker_fail_count[w], 1) + 1;
-                atomic_fetch_add(&g_drop_total, 1);
-                LOG("dispatcher", req.request_id, "route_failed",
-                    ",\"worker\":%d,\"pid\":%d,\"errno\":%d,\"reason\":\"%s\",\"consecutive_failures\":%d",
-                    w, g_worker_pids[w], err, strerror(err), fails);
-
-                /* Trip circuit breaker after threshold (Issue 1: stop bleeding) */
-                if (fails >= CB_MAX_FAILURES) {
-                    trip_circuit_breaker(w);
-                }
-            }
-        } else {
-            atomic_fetch_add(&g_drop_total, 1);
-            LOG("dispatcher", req.request_id, "no_workers_available", "");
-        }
+        if (pktq_push(buf, (int)n) != 0)
+            atomic_fetch_add(&g_pktq_dropped, 1);
     }
+#endif
 
     /* Cleanup */
     close(sock);
+    /* Wake all routing threads so they can exit */
+    for (int i = 0; i < num_route_threads; i++)
+        sem_post(&g_pktq_sem);
+    sem_destroy(&g_pktq_sem);
+    free(g_pktq.slots);
+    free(route_tids);
     for (int i = 0; i < OBD_NUM_WORKERS; i++)
         close(g_worker_socks[i]);
     dedup_cleanup();
@@ -817,5 +923,5 @@ void dispatcher_run(const char *local_ip, int listen_port,
     if (use_mux)
         mux_cleanup(); /* Clear spinlocks and clean memory maps */
 
-    LOG("dispatcher", "", "stopped", "");
+    LOG(OBD_LOG_INFO, "dispatcher", "", "stopped", "");
 }

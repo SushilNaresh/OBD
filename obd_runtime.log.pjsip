@@ -1,0 +1,596 @@
+04:16:48.412         sip_endpoint.c  .Module "mod-pjsua-log" registered
+04:16:48.412         sip_endpoint.c  .Module "mod-tsx-layer" registered
+04:16:48.412         sip_endpoint.c  .Module "mod-stateful-util" registered
+04:16:48.412         sip_endpoint.c  .Module "mod-ua" registered
+04:16:48.412         sip_endpoint.c  .Module "mod-100rel" registered
+04:16:48.412         sip_endpoint.c  .Module "mod-pjsua" registered
+04:16:48.412         sip_endpoint.c  .Module "mod-invite" registered
+04:16:48.420             alsa_dev.c  ..ALSA driver found 0 devices
+04:16:48.420             alsa_dev.c  ..ALSA initialized
+04:16:48.421                  pjlib  ..select() I/O Queue created (0x6343928338f8)
+04:16:48.421           conference.c  ..Creating conference bridge with 36 ports
+04:16:48.421           Master/sound  ..Using delay buffer with WSOLA.
+04:16:48.436         sip_endpoint.c  .Module "mod-evsub" registered
+04:16:48.436         sip_endpoint.c  .Module "mod-presence" registered
+04:16:48.436                evsub.c  .Event pkg "presence" registered by mod-presence
+04:16:48.436         sip_endpoint.c  .Module "mod-dlg_even" registered
+04:16:48.436                evsub.c  .Event pkg "dialog" registered by mod-dlg_even
+04:16:48.436         sip_endpoint.c  .Module "mod-mwi" registered
+04:16:48.436                evsub.c  .Event pkg "message-summary" registered by mod-mwi
+04:16:48.436         sip_endpoint.c  .Module "mod-refer" registered
+04:16:48.436                evsub.c  .Event pkg "refer" registered by mod-refer
+04:16:48.436         sip_endpoint.c  .Module "mod-pjsua-pres" registered
+04:16:48.436         sip_endpoint.c  .Module "mod-unsolicited-mwi" registered
+04:16:48.436         sip_endpoint.c  .Module "mod-pjsua-im" registered
+04:16:48.436         sip_endpoint.c  .Module "mod-pjsua-options" registered
+04:16:48.436           pjsua_core.c  .1 SIP worker threads created
+04:16:48.436           pjsua_core.c  .pjsua version 2.17 for Linux-6.8.0.106/x86_64/glibc-2.39 initialized
+04:16:48.436           pjsua_core.c  .PJSUA state changed: CREATED --> INIT
+04:16:48.436         sip_endpoint.c  Module "mod-obd-handler" registered
+04:16:48.436           pjsua_core.c  SIP UDP socket reachable at 10.20.10.119:15060
+04:16:48.436      udp0x634392923860  SIP UDP transport started, published address is 10.20.10.119:15060
+04:16:48.436           pjsua_core.c  PJSUA state changed: INIT --> STARTING
+04:16:48.436           pjsua_core.c  .PJSUA state changed: STARTING --> RUNNING
+04:16:48.436            pjsua_aud.c  Setting null sound device..
+04:16:48.436            pjsua_aud.c  .Opening null sound device..
+04:17:21.809            pjsua_acc.c !Adding account: id="+9683872571" <sip:+9683872571@10.20.10.119;user=phone>
+04:17:21.809            pjsua_acc.c  .Account "+9683872571" <sip:+9683872571@10.20.10.119;user=phone> added with id 0
+04:17:21.809           pjsua_call.c  Making call with acc #0 to <sip:7883872571@10.20.10.119;user=phone>
+04:17:21.809      dlg0x73a380001250  .UAC dialog created
+04:17:21.809      dlg0x73a380001250  ..Session count inc to 2 by mod-pjsua
+04:17:21.809          pjsua_media.c  .Call 0: initializing media..
+04:17:21.809          pjsua_media.c  ..Call 0: setting media direction #0 to 2.
+04:17:21.810          pjsua_media.c  ..RTP socket reachable at 10.20.10.119:20026
+04:17:21.810          pjsua_media.c  ..RTCP socket reachable at 10.20.10.119:20027
+04:17:21.810     srtp0x73a380003ed0  ..SRTP keying SDES created
+04:17:21.810     srtp0x73a380003ed0  ..SRTP transport created
+04:17:21.810          pjsua_media.c  ..Media index 0 selected for audio call 0
+04:17:21.810          pjsua_media.c  ..Call 0: media transport initialization complete: Success
+04:17:21.810      udp0x73a3800038a0  ..UDP media transport created
+04:17:21.810      dlg0x73a380001250  ..Session count dec to 2 by mod-pjsua
+04:17:21.810      dlg0x73a380001250  .Module mod-invite added as dialog usage, data=0x73a3800031a8
+04:17:21.810      dlg0x73a380001250  ..Session count inc to 4 by mod-invite
+04:17:21.810      dlg0x73a380001250  .Module mod-100rel added as dialog usage, data=0x73a38000aca8
+04:17:21.810      dlg0x73a380001250  .100rel module attached
+04:17:21.810      inv0x73a380001250  .UAC invite session created for dialog dlg0x73a380001250
+04:17:21.810             sip_util.c  .Request msg INVITE/cseq=14178 (tdta0x73a38000b270) created.
+04:17:21.810      inv0x73a380001250  ..Sending Request msg INVITE/cseq=14178 (tdta0x73a38000b270)
+04:17:21.810      dlg0x73a380001250  ...Sending Request msg INVITE/cseq=14178 (tdta0x73a38000b270)
+04:17:21.810      tsx0x73a38000e1e0  ....Transaction created for Request msg INVITE/cseq=14178 (tdta0x73a38000b270)
+04:17:21.810      tsx0x73a38000e1e0  ...Sending Request msg INVITE/cseq=14178 (tdta0x73a38000b270) in state Null
+04:17:21.810          sip_resolve.c  ....Target '10.20.10.119:5060' type=UDP resolved to '10.20.10.119:5060' type=UDP (UDP transport)
+04:17:21.810             sip_util.c  ....Resorting target addresses based on IPv4 preference
+04:17:21.810           pjsua_core.c  ....TX 1210 bytes Request msg INVITE/cseq=14178 (tdta0x73a38000b270) to UDP 10.20.10.119:5060:
+INVITE sip:7883872571@10.20.10.119;user=phone SIP/2.0
+Via: SIP/2.0/UDP 10.20.10.119:15060;rport;branch=z9hG4bKPj9967628c-5a46-4421-8a4e-08a776a84f29
+Max-Forwards: 70
+From: "+9683872571" <sip:+9683872571@10.20.10.119;user=phone>;tag=281746cf-33db-442d-8dff-c0b9161c0b1f
+To: <sip:7883872571@10.20.10.119;user=phone>
+Contact: <sip:CallCollectService@10.20.10.119:15060>
+Call-ID: 500a8486-2666-47f6-a066-25fdb3aa78ee
+CSeq: 14178 INVITE
+Route: <sip:10.20.10.119:5060;transport=udp;lr>
+Require: 100rel
+Session-Expires: 1800
+Min-SE: 90
+P-Asserted-Identity: <sip:9683872571@10.20.10.119;user=phone>
+P-Early-Media: Supported
+User-Agent: CallCollectService
+Allow: ACK, BYE, CANCEL, INFO, INVITE, MESSAGE, NOTIFY, OPTIONS, PRACK, PUBLISH, REFER, REGISTER, SUBSCRIBE, UPDATE
+Supported: 100rel, timer, replaces, norefersub, histinfo
+Content-Type: application/sdp
+Content-Length:   317
+
+v=0
+o=- 3992041041 3992041041 IN IP4 10.20.10.119
+s=pjmedia
+b=AS:84
+t=0 0
+a=X-nat:0
+m=audio 20026 RTP/AVP 0 120
+c=IN IP4 10.20.10.119
+b=TIAS:64000
+a=rtcp:20027 IN IP4 10.20.10.119
+a=recvonly
+a=rtpmap:0 PCMU/8000
+a=rtpmap:120 telephone-event/8000
+a=fmtp:120 0-16
+a=ssrc:515490238 cname:38bebf1a794ec04b
+
+--end msg--
+04:17:21.810      udp0x634392923860  ....Request msg INVITE/cseq=14178 (tdta0x73a38000b270) sent successfully
+04:17:21.810      tsx0x73a38000e1e0  ....State changed from Null to Calling, event=TX_MSG
+04:17:21.810      dlg0x73a380001250  .....Transaction tsx0x73a38000e1e0 state changed to Calling
+04:17:21.810      inv0x73a380001250  ......State changed from NULL to CALLING, event=TSX_STATE
+04:17:21.813         sip_endpoint.c !Processing incoming message: Response msg 183/INVITE/cseq=14178 (rdata0x63439296b3b8)
+04:17:21.813           pjsua_core.c  .RX 644 bytes Response msg 183/INVITE/cseq=14178 (rdata0x63439296b3b8) from UDP 10.20.10.119:5060:
+SIP/2.0 183 Session Progress
+Via: SIP/2.0/UDP 10.20.10.119:15060;received=10.20.10.119;rport=15060;branch=z9hG4bKPj9967628c-5a46-4421-8a4e-08a776a84f29
+Record-Route:  <sip:10.20.10.119;lr=on;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f;Hpt=0;CxtId=3>
+From:  "+9683872571" <sip:+9683872571@10.20.10.119;user=phone>;tag=281746cf-33db-442d-8dff-c0b9161c0b1f
+To:  <sip:7883872571@10.20.10.119;user=phone>;tag=1
+Call-ID: 500a8486-2666-47f6-a066-25fdb3aa78ee
+CSeq: 14178 INVITE
+Require: 100rel
+RSeq: 1
+Contact: <sip:10.20.10.120:5070;lr;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f>
+Content-Length: 0
+
+
+--end msg--
+04:17:21.813      tsx0x73a38000e1e0  .Incoming Response msg 183/INVITE/cseq=14178 (rdata0x63439296b3b8) in state Calling
+04:17:21.813      tsx0x73a38000e1e0  ..State changed from Calling to Proceeding, event=RX_MSG
+04:17:21.813      dlg0x73a380001250  ...Received Response msg 183/INVITE/cseq=14178 (rdata0x63439296b3b8)
+04:17:21.813      dlg0x73a380001250  ....Route-set updated
+04:17:21.813      dlg0x73a380001250  ...Transaction tsx0x73a38000e1e0 state changed to Proceeding
+04:17:21.813      inv0x73a380001250  ....State changed from CALLING to EARLY, event=TSX_STATE
+04:17:21.813             sip_util.c  ....Request msg PRACK/cseq=14179 (tdta0x73a378001bd0) created.
+04:17:21.813      dlg0x73a380001250  .....Sending Request msg PRACK/cseq=14179 (tdta0x73a378001bd0)
+04:17:21.813      tsx0x73a378003b90  ......Transaction created for Request msg PRACK/cseq=14179 (tdta0x73a378001bd0)
+04:17:21.813      tsx0x73a378003b90  .....Sending Request msg PRACK/cseq=14179 (tdta0x73a378001bd0) in state Null
+04:17:21.813          sip_resolve.c  ......Target '10.20.10.119:0' type=Unspecified resolved to '10.20.10.119:5060' type=UDP (UDP transport)
+04:17:21.813             sip_util.c  ......Resorting target addresses based on IPv4 preference
+04:17:21.813           pjsua_core.c  ......TX 713 bytes Request msg PRACK/cseq=14179 (tdta0x73a378001bd0) to UDP 10.20.10.119:5060:
+PRACK sip:10.20.10.120:5070;lr;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f SIP/2.0
+Via: SIP/2.0/UDP 10.20.10.119:15060;rport;branch=z9hG4bKPjfc670a19-4b86-4416-9484-8ea3eb422ccb
+Max-Forwards: 70
+From: "+9683872571" <sip:+9683872571@10.20.10.119;user=phone>;tag=281746cf-33db-442d-8dff-c0b9161c0b1f
+To: <sip:7883872571@10.20.10.119;user=phone>;tag=1
+Call-ID: 500a8486-2666-47f6-a066-25fdb3aa78ee
+CSeq: 14179 PRACK
+Route: <sip:10.20.10.119;lr;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f;Hpt=0;CxtId=3>
+RAck: 1 14178 INVITE
+User-Agent: CallCollectService
+Allow: ACK, BYE, CANCEL, INFO, INVITE, NOTIFY, OPTIONS, PRACK, REFER, REGISTER, SUBSCRIBE
+Content-Length:  0
+
+
+--end msg--
+04:17:21.813      udp0x634392923860  ......Request msg PRACK/cseq=14179 (tdta0x73a378001bd0) sent successfully
+04:17:21.813      tsx0x73a378003b90  ......State changed from Null to Calling, event=TX_MSG
+04:17:21.813      dlg0x73a380001250  .......Transaction tsx0x73a378003b90 state changed to Calling
+04:17:21.814         sip_endpoint.c  Processing incoming message: Response msg 200/PRACK/cseq=14179 (rdata0x73a378006898)
+04:17:21.814           pjsua_core.c  .RX 385 bytes Response msg 200/PRACK/cseq=14179 (rdata0x73a378006898) from UDP 10.20.10.119:5060:
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 10.20.10.119:15060;received=10.20.10.119;rport=15060;branch=z9hG4bKPjfc670a19-4b86-4416-9484-8ea3eb422ccb
+From:  "+9683872571" <sip:+9683872571@10.20.10.119;user=phone>;tag=281746cf-33db-442d-8dff-c0b9161c0b1f
+To:  <sip:7883872571@10.20.10.119;user=phone>;tag=1
+Call-ID: 500a8486-2666-47f6-a066-25fdb3aa78ee
+CSeq: 14179 PRACK
+Content-Length: 0
+
+
+--end msg--
+04:17:21.814      tsx0x73a378003b90  .Incoming Response msg 200/PRACK/cseq=14179 (rdata0x73a378006898) in state Calling
+04:17:21.814      tsx0x73a378003b90  ..State changed from Calling to Completed, event=RX_MSG
+04:17:21.814      dlg0x73a380001250  ...Received Response msg 200/PRACK/cseq=14179 (rdata0x73a378006898)
+04:17:21.814      dlg0x73a380001250  ...Transaction tsx0x73a378003b90 state changed to Completed
+04:17:21.815         sip_endpoint.c  Processing incoming message: Response msg 180/INVITE/cseq=14178 (rdata0x73a378006898)
+04:17:21.815           pjsua_core.c  .RX 635 bytes Response msg 180/INVITE/cseq=14178 (rdata0x73a378006898) from UDP 10.20.10.119:5060:
+SIP/2.0 180 Ringing
+Via: SIP/2.0/UDP 10.20.10.119:15060;received=10.20.10.119;rport=15060;branch=z9hG4bKPj9967628c-5a46-4421-8a4e-08a776a84f29
+Record-Route:  <sip:10.20.10.119;lr=on;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f;Hpt=0;CxtId=3>
+From:  "+9683872571" <sip:+9683872571@10.20.10.119;user=phone>;tag=281746cf-33db-442d-8dff-c0b9161c0b1f
+To:  <sip:7883872571@10.20.10.119;user=phone>;tag=1
+Call-ID: 500a8486-2666-47f6-a066-25fdb3aa78ee
+CSeq: 14178 INVITE
+Require: 100rel
+RSeq: 2
+Contact: <sip:10.20.10.120:5070;lr;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f>
+Content-Length: 0
+
+
+--end msg--
+04:17:21.815      tsx0x73a38000e1e0  .Incoming Response msg 180/INVITE/cseq=14178 (rdata0x73a378006898) in state Proceeding
+04:17:21.815      tsx0x73a38000e1e0  ..State changed from Proceeding to Proceeding, event=RX_MSG
+004:16:48.414         sip_endpoint.c  .Module "mod-pjsua-log" registered
+04:16:48.414         sip_endpoint.c  .Module "mod-tsx-layer" registered
+04:16:48.414         sip_endpoint.c  .Module "mod-stateful-util" registered
+04:16:48.414         sip_endpoint.c  .Module "mod-ua" registered
+04:16:48.414         sip_endpoint.c  .Module "mod-100rel" registered
+04:16:48.414         sip_endpoint.c  .Module "mod-pjsua" registered
+04:16:48.414         sip_endpoint.c  .Module "mod-invite" registered
+04:16:48.424             alsa_dev.c  ..ALSA driver found 0 devices
+04:16:48.424             alsa_dev.c  ..ALSA initialized
+04:16:48.424                  pjlib  ..select() I/O Queue created (0x6343928338f8)
+04:16:48.424           conference.c  ..Creating conference bridge with 36 ports
+04:16:48.424           Master/sound  ..Using delay buffer with WSOLA.
+04:16:48.434         sip_endpoint.c  .Module "mod-evsub" registered
+04:16:48.434         sip_endpoint.c  .Module "mod-presence" registered
+04:16:48.434                evsub.c  .Event pkg "presence" registered by mod-presence
+04:16:48.434         sip_endpoint.c  .Module "mod-dlg_even" registered
+04:16:48.434                evsub.c  .Event pkg "dialog" registered by mod-dlg_even
+04:16:48.434         sip_endpoint.c  .Module "mod-mwi" registered
+04:16:48.434                evsub.c  .Event pkg "message-summary" registered by mod-mwi
+04:16:48.434         sip_endpoint.c  .Module "mod-refer" registered
+04:16:48.434                evsub.c  .Event pkg "refer" registered by mod-refer
+04:16:48.434         sip_endpoint.c  .Module "mod-pjsua-pres" registered
+04:16:48.434         sip_endpoint.c  .Module "mod-unsolicited-mwi" registered
+04:16:48.435         sip_endpoint.c  .Module "mod-pjsua-im" registered
+04:16:48.435         sip_endpoint.c  .Module "mod-pjsua-options" registered
+04:16:48.435           pjsua_core.c  .1 SIP worker threads created
+04:16:48.435           pjsua_core.c  .pjsua version 2.17 for Linux-6.8.0.106/x86_64/glibc-2.39 initialized
+04:16:48.435           pjsua_core.c  .PJSUA state changed: CREATED --> INIT
+04:16:48.435         sip_endpoint.c  Module "mod-obd-handler" registered
+04:16:48.435           pjsua_core.c  SIP UDP socket reachable at 10.20.10.119:15061
+04:16:48.435      udp0x634392923860  SIP UDP transport started, published address is 10.20.10.119:15061
+04:16:48.435           pjsua_core.c  PJSUA state changed: INIT --> STARTING
+04:16:48.435           pjsua_core.c  .PJSUA state changed: STARTING --> RUNNING
+04:16:48.435            pjsua_aud.c  Setting null sound device..
+04:16:48.435            pjsua_aud.c  .Opening null sound device..
+04:17:22.321            pjsua_acc.c !Adding account: id="+967696522" <sip:+967696522@10.20.10.119;user=phone>
+04:17:22.321            pjsua_acc.c  .Account "+967696522" <sip:+967696522@10.20.10.119;user=phone> added with id 0
+04:17:22.321           pjsua_call.c  Making call with acc #0 to <sip:787696522@10.20.10.119;user=phone>
+04:17:22.321      dlg0x73a380001250  .UAC dialog created
+04:17:22.321      dlg0x73a380001250  ..Session count inc to 2 by mod-pjsua
+04:17:22.321          pjsua_media.c  .Call 0: initializing media..
+04:17:22.321          pjsua_media.c  ..Call 0: setting media direction #0 to 2.
+04:17:22.321          pjsua_media.c  ..RTP socket reachable at 10.20.10.119:20032
+04:17:22.321          pjsua_media.c  ..RTCP socket reachable at 10.20.10.119:20033
+04:17:22.322     srtp0x73a380003ed0  ..SRTP keying SDES created
+04:17:22.322     srtp0x73a380003ed0  ..SRTP transport created
+04:17:22.322          pjsua_media.c  ..Media index 0 selected for audio call 0
+04:17:22.322          pjsua_media.c  ..Call 0: media transport initialization complete: Success
+04:17:22.322      udp0x73a3800038a0  ..UDP media transport created
+04:17:22.322      dlg0x73a380001250  ..Session count dec to 2 by mod-pjsua
+04:17:22.322      dlg0x73a380001250  .Module mod-invite added as dialog usage, data=0x73a3800031a8
+04:17:22.322      dlg0x73a380001250  ..Session count inc to 4 by mod-invite
+04:17:22.322      dlg0x73a380001250  .Module mod-100rel added as dialog usage, data=0x73a38000aca8
+04:17:22.322      dlg0x73a380001250  .100rel module attached
+04:17:22.322      inv0x73a380001250  .UAC invite session created for dialog dlg0x73a380001250
+04:17:22.322             sip_util.c  .Request msg INVITE/cseq=1749 (tdta0x73a38000b270) created.
+04:17:22.322      inv0x73a380001250  ..Sending Request msg INVITE/cseq=1749 (tdta0x73a38000b270)
+04:17:22.322      dlg0x73a380001250  ...Sending Request msg INVITE/cseq=1749 (tdta0x73a38000b270)
+04:17:22.322      tsx0x73a38000e1e0  ....Transaction created for Request msg INVITE/cseq=1749 (tdta0x73a38000b270)
+04:17:22.322      tsx0x73a38000e1e0  ...Sending Request msg INVITE/cseq=1749 (tdta0x73a38000b270) in state Null
+04:17:22.322          sip_resolve.c  ....Target '10.20.10.119:5060' type=UDP resolved to '10.20.10.119:5060' type=UDP (UDP transport)
+04:17:22.322             sip_util.c  ....Resorting target addresses based on IPv4 preference
+04:17:22.322           pjsua_core.c  ....TX 1204 bytes Request msg INVITE/cseq=1749 (tdta0x73a38000b270) to UDP 10.20.10.119:5060:
+INVITE sip:787696522@10.20.10.119;user=phone SIP/2.0
+Via: SIP/2.0/UDP 10.20.10.119:15061;rport;branch=z9hG4bKPj9d76c46b-fdf5-4283-8b85-4e7825c04249
+Max-Forwards: 70
+From: "+967696522" <sip:+967696522@10.20.10.119;user=phone>;tag=4baac352-a3f2-42ad-80d8-2c992a3a5793
+To: <sip:787696522@10.20.10.119;user=phone>
+Contact: <sip:CallCollectService@10.20.10.119:15061>
+Call-ID: 63251a90-33cb-4163-acb1-056902a31608
+CSeq: 1749 INVITE
+Route: <sip:10.20.10.119:5060;transport=udp;lr>
+Require: 100rel
+Session-Expires: 1800
+Min-SE: 90
+P-Asserted-Identity: <sip:967696522@10.20.10.119;user=phone>
+P-Early-Media: Supported
+User-Agent: CallCollectService
+Allow: ACK, BYE, CANCEL, INFO, INVITE, MESSAGE, NOTIFY, OPTIONS, PRACK, PUBLISH, REFER, REGISTER, SUBSCRIBE, UPDATE
+Supported: 100rel, timer, replaces, norefersub, histinfo
+Content-Type: application/sdp
+Content-Length:   317
+
+v=0
+o=- 3992041042 3992041042 IN IP4 10.20.10.119
+s=pjmedia
+b=AS:84
+t=0 0
+a=X-nat:0
+m=audio 20032 RTP/AVP 0 120
+c=IN IP4 10.20.10.119
+b=TIAS:64000
+a=rtcp:20033 IN IP4 10.20.10.119
+a=recvonly
+a=rtpmap:0 PCMU/8000
+a=rtpmap:120 telephone-event/8000
+a=fmtp:120 0-16
+a=ssrc:676428475 cname:5a146f3b76d038c0
+
+--end msg--
+04:17:22.322      udp0x634392923860  ....Request msg INVITE/cseq=1749 (tdta0x73a38000b270) sent successfully
+04:17:22.322      tsx0x73a38000e1e0  ....State changed from Null to Calling, event=TX_MSG
+04:17:22.322      dlg0x73a380001250  .....Transaction tsx0x73a38000e1e0 state changed to Calling
+04:17:22.322      inv0x73a380001250  ......State changed from NULL to CALLING, event=TSX_STATE
+04:17:22.324         sip_endpoint.c !Processing incoming message: Response msg 183/INVITE/cseq=1749 (rdata0x63439296b3b8)
+04:17:22.324           pjsua_core.c  .RX 640 bytes Response msg 183/INVITE/cseq=1749 (rdata0x63439296b3b8) from UDP 10.20.10.119:5060:
+SIP/2.0 183 Session Progress
+Via: SIP/2.0/UDP 10.20.10.119:15061;received=10.20.10.119;rport=15061;branch=z9hG4bKPj9d76c46b-fdf5-4283-8b85-4e7825c04249
+Record-Route:  <sip:10.20.10.119;lr=on;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793;Hpt=0;CxtId=3>
+From:  "+967696522" <sip:+967696522@10.20.10.119;user=phone>;tag=4baac352-a3f2-42ad-80d8-2c992a3a5793
+To:  <sip:787696522@10.20.10.119;user=phone>;tag=1
+Call-ID: 63251a90-33cb-4163-acb1-056902a31608
+CSeq: 1749 INVITE
+Require: 100rel
+RSeq: 1
+Contact: <sip:10.20.10.120:5071;lr;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793>
+Content-Length: 0
+
+
+--end msg--
+04:17:22.324      tsx0x73a38000e1e0  .Incoming Response msg 183/INVITE/cseq=1749 (rdata0x63439296b3b8) in state Calling
+04:17:22.324      tsx0x73a38000e1e0  ..State changed from Calling to Proceeding, event=RX_MSG
+04:17:22.324      dlg0x73a380001250  ...Received Response msg 183/INVITE/cseq=1749 (rdata0x63439296b3b8)
+04:17:22.324      dlg0x73a380001250  ....Route-set updated
+04:17:22.324      dlg0x73a380001250  ...Transaction tsx0x73a38000e1e0 state changed to Proceeding
+04:17:22.324      inv0x73a380001250  ....State changed from CALLING to EARLY, event=TSX_STATE
+04:17:22.324             sip_util.c  ....Request msg PRACK/cseq=1750 (tdta0x73a378001bd0) created.
+04:17:22.324      dlg0x73a380001250  .....Sending Request msg PRACK/cseq=1750 (tdta0x73a378001bd0)
+04:17:22.324      tsx0x73a378003b90  ......Transaction created for Request msg PRACK/cseq=1750 (tdta0x73a378001bd0)
+04:17:22.324      tsx0x73a378003b90  .....Sending Request msg PRACK/cseq=1750 (tdta0x73a378001bd0) in state Null
+04:17:22.324          sip_resolve.c  ......Target '10.20.10.119:0' type=Unspecified resolved to '10.20.10.119:5060' type=UDP (UDP transport)
+04:17:22.324             sip_util.c  ......Resorting target addresses based on IPv4 preference
+04:17:22.324           pjsua_core.c  ......TX 708 bytes Request msg PRACK/cseq=1750 (tdta0x73a378001bd0) to UDP 10.20.10.119:5060:
+PRACK sip:10.20.10.120:5071;lr;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793 SIP/2.0
+Via: SIP/2.0/UDP 10.20.10.119:15061;rport;branch=z9hG4bKPj0dc4982b-4cca-4434-ad29-3cf5a468a904
+Max-Forwards: 70
+From: "+967696522" <sip:+967696522@10.20.10.119;user=phone>;tag=4baac352-a3f2-42ad-80d8-2c992a3a5793
+To: <sip:787696522@10.20.10.119;user=phone>;tag=1
+Call-ID: 63251a90-33cb-4163-acb1-056902a31608
+CSeq: 1750 PRACK
+Route: <sip:10.20.10.119;lr;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793;Hpt=0;CxtId=3>
+RAck: 1 1749 INVITE
+User-Agent: CallCollectService
+Allow: ACK, BYE, CANCEL, INFO, INVITE, NOTIFY, OPTIONS, PRACK, REFER, REGISTER, SUBSCRIBE
+Content-Length:  0
+
+
+--end msg--
+04:17:22.324      udp0x634392923860  ......Request msg PRACK/cseq=1750 (tdta0x73a378001bd0) sent successfully
+04:17:22.324      tsx0x73a378003b90  ......State changed from Null to Calling, event=TX_MSG
+04:17:22.324      dlg0x73a380001250  .......Transaction tsx0x73a378003b90 state changed to Calling
+04:17:22.325         sip_endpoint.c  Processing incoming message: Response msg 200/PRACK/cseq=1750 (rdata0x73a378006898)
+04:17:22.325           pjsua_core.c  .RX 381 bytes Response msg 200/PRACK/cseq=1750 (rdata0x73a378006898) from UDP 10.20.10.119:5060:
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 10.20.10.119:15061;received=10.20.10.119;rport=15061;branch=z9hG4bKPj0dc4982b-4cca-4434-ad29-3cf5a468a904
+From:  "+967696522" <sip:+967696522@10.20.10.119;user=phone>;tag=4baac352-a3f2-42ad-80d8-2c992a3a5793
+To:  <sip:787696522@10.20.10.119;user=phone>;tag=1
+Call-ID: 63251a90-33cb-4163-acb1-056902a31608
+CSeq: 1750 PRACK
+Content-Length: 0
+
+
+--end msg--
+04:17:22.325      tsx0x73a378003b90  .Incoming Response msg 200/PRACK/cseq=1750 (rdata0x73a378006898) in state Calling
+04:17:22.325      tsx0x73a378003b90  ..State changed from Calling to Completed, event=RX_MSG
+04:17:22.325      dlg0x73a380001250  ...Received Response msg 200/PRACK/cseq=1750 (rdata0x73a378006898)
+04:17:22.325      dlg0x73a380001250  ...Transaction tsx0x73a378003b90 state changed to Completed
+04:17:22.326         sip_endpoint.c  Processing incoming message: Response msg 180/INVITE/cseq=1749 (rdata0x73a378006898)
+04:17:22.326           pjsua_core.c  .RX 631 bytes Response msg 180/INVITE/cseq=1749 (rdata0x73a378006898) from UDP 10.20.10.119:5060:
+SIP/2.0 180 Ringing
+Via: SIP/2.0/UDP 10.20.10.119:15061;received=10.20.10.119;rport=15061;branch=z9hG4bKPj9d76c46b-fdf5-4283-8b85-4e7825c04249
+Record-Route:  <sip:10.20.10.119;lr=on;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793;Hpt=0;CxtId=3>
+From:  "+967696522" <sip:+967696522@10.20.10.119;user=phone>;tag=4baac352-a3f2-42ad-80d8-2c992a3a5793
+To:  <sip:787696522@10.20.10.119;user=phone>;tag=1
+Call-ID: 63251a90-33cb-4163-acb1-056902a31608
+CSeq: 1749 INVITE
+Require: 100rel
+RSeq: 2
+Contact: <sip:10.20.10.120:5071;lr;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793>
+Content-Length: 0
+
+
+--end msg--
+04:17:22.326      tsx0x73a38000e1e0  .Incoming Response msg 180/INVITE/cseq=1749 (rdata0x73a378006898) in state Proceeding
+04:17:22.326      tsx0x73a38000e1e0  ..State changed from Proceeding to Proceeding, event=RX_MSG
+04:17:22.326      dlg0x73a380001250  ...Received Resp4:17:21.815      dlg0x73a380001250  ...Received Response msg 180/INVITE/cseq=14178 (rdata0x73a378006898)
+04:17:21.815      dlg0x73a380001250  ...Transaction tsx0x73a38000e1e0 state changed to Proceeding
+04:17:21.815      inv0x73a380001250  ....State changed from EARLY to EARLY, event=TSX_STATE
+04:17:21.815             sip_util.c  ....Request msg PRACK/cseq=14180 (tdta0x73a378008870) created.
+04:17:21.815      dlg0x73a380001250  .....Sending Request msg PRACK/cseq=14180 (tdta0x73a378008870)
+04:17:21.815      tsx0x73a37800a830  ......Transaction created for Request msg PRACK/cseq=14180 (tdta0x73a378008870)
+04:17:21.815      tsx0x73a37800a830  .....Sending Request msg PRACK/cseq=14180 (tdta0x73a378008870) in state Null
+04:17:21.815          sip_resolve.c  ......Target '10.20.10.119:0' type=Unspecified resolved to '10.20.10.119:5060' type=UDP (UDP transport)
+04:17:21.815             sip_util.c  ......Resorting target addresses based on IPv4 preference
+04:17:21.815           pjsua_core.c  ......TX 713 bytes Request msg PRACK/cseq=14180 (tdta0x73a378008870) to UDP 10.20.10.119:5060:
+PRACK sip:10.20.10.120:5070;lr;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f SIP/2.0
+Via: SIP/2.0/UDP 10.20.10.119:15060;rport;branch=z9hG4bKPj2cc403be-aaba-44d4-83de-b138b73fe71e
+Max-Forwards: 70
+From: "+9683872571" <sip:+9683872571@10.20.10.119;user=phone>;tag=281746cf-33db-442d-8dff-c0b9161c0b1f
+To: <sip:7883872571@10.20.10.119;user=phone>;tag=1
+Call-ID: 500a8486-2666-47f6-a066-25fdb3aa78ee
+CSeq: 14180 PRACK
+Route: <sip:10.20.10.119;lr;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f;ftag=281746cf-33db-442d-8dff-c0b9161c0b1f;Hpt=0;CxtId=3>
+RAck: 2 14178 INVITE
+User-Agent: CallCollectService
+Allow: ACK, BYE, CANCEL, INFO, INVITE, NOTIFY, OPTIONS, PRACK, REFER, REGISTER, SUBSCRIBE
+Content-Length:  0
+
+
+--end msg--
+04:17:21.815      udp0x634392923860  ......Request msg PRACK/cseq=14180 (tdta0x73a378008870) sent successfully
+04:17:21.815      tsx0x73a37800a830  ......State changed from Null to Calling, event=TX_MSG
+04:17:21.815      dlg0x73a380001250  .......Transaction tsx0x73a37800a830 state changed to Calling
+04:17:21.816         sip_endpoint.c  Processing incoming message: Response msg 200/PRACK/cseq=14180 (rdata0x73a378006898)
+04:17:21.816           pjsua_core.c  .RX 385 bytes Response msg 200/PRACK/cseq=14180 (rdata0x73a378006898) from UDP 10.20.10.119:5060:
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 10.20.10.119:15060;received=10.20.10.119;rport=15060;branch=z9hG4bKPj2cc403be-aaba-44d4-83de-b138b73fe71e
+From:  "+9683872571" <sip:+9683872571@10.20.10.119;user=phone>;tag=281746cf-33db-442d-8dff-c0b9161c0b1f
+To:  <sip:7883872571@10.20.10.119;user=phone>;tag=1
+Call-ID: 500a8486-2666-47f6-a066-25fdb3aa78ee
+CSeq: 14180 PRACK
+Content-Length: 0
+
+
+--end msg--
+04:17:21.816      tsx0x73a37800a830  .Incoming Response msg 200/PRACK/cseq=14180 (rdata0x73a378006898) in state Calling
+04:17:21.816      tsx0x73a37800a830  ..State changed from Calling to Completed, event=RX_MSG
+04:17:21.816      dlg0x73a380001250  ...Received Response msg 200/PRACK/cseq=14180 (rdata0x73a378006898)
+04:17:21.816      dlg0x73a380001250  ...Transaction tsx0x73a37800a830 state changed to Completed
+04:17:26.814      tsx0x73a378003b90  Timeout timer event
+04:17:26.814      tsx0x73a378003b90  .State changed from Completed to Terminated, event=TIMER
+04:17:26.814      dlg0x73a380001250  ..Transaction tsx0x73a378003b90 state changed to Terminated
+04:17:26.814      tsx0x73a378003b90  Timeout timer event
+04:17:26.814      tsx0x73a378003b90  .State changed from Terminated to Destroyed, event=TIMER
+04:17:26.814     tdta0x73a378001bd0  ..Destroying txdata Request msg PRACK/cseq=14179 (tdta0x73a378001bd0)
+04:17:26.814      tsx0x73a378003b90  Transaction destroyed!
+04:17:26.816      tsx0x73a37800a830  Timeout timer event
+04:17:26.816      tsx0x73a37800a830  .State changed from Completed to Terminated, event=TIMER
+04:17:26.816      dlg0x73a380001250  ..Transaction tsx0x73a37800a830 state changed to Terminated
+04:17:26.816      tsx0x73a37800a830  Timeout timer event
+04:17:26.816      tsx0x73a37800a8onse msg 180/INVITE/cseq=1749 (rdata0x73a378006898)
+04:17:22.326      dlg0x73a380001250  ...Transaction tsx0x73a38000e1e0 state changed to Proceeding
+04:17:22.326      inv0x73a380001250  ....State changed from EARLY to EARLY, event=TSX_STATE
+04:17:22.326             sip_util.c  ....Request msg PRACK/cseq=1751 (tdta0x73a378008870) created.
+04:17:22.326      dlg0x73a380001250  .....Sending Request msg PRACK/cseq=1751 (tdta0x73a378008870)
+04:17:22.326      tsx0x73a37800a830  ......Transaction created for Request msg PRACK/cseq=1751 (tdta0x73a378008870)
+04:17:22.326      tsx0x73a37800a830  .....Sending Request msg PRACK/cseq=1751 (tdta0x73a378008870) in state Null
+04:17:22.326          sip_resolve.c  ......Target '10.20.10.119:0' type=Unspecified resolved to '10.20.10.119:5060' type=UDP (UDP transport)
+04:17:22.326             sip_util.c  ......Resorting target addresses based on IPv4 preference
+04:17:22.326           pjsua_core.c  ......TX 708 bytes Request msg PRACK/cseq=1751 (tdta0x73a378008870) to UDP 10.20.10.119:5060:
+PRACK sip:10.20.10.120:5071;lr;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793 SIP/2.0
+Via: SIP/2.0/UDP 10.20.10.119:15061;rport;branch=z9hG4bKPjfe9178c6-d3dc-49b0-93bb-1a6674797947
+Max-Forwards: 70
+From: "+967696522" <sip:+967696522@10.20.10.119;user=phone>;tag=4baac352-a3f2-42ad-80d8-2c992a3a5793
+To: <sip:787696522@10.20.10.119;user=phone>;tag=1
+Call-ID: 63251a90-33cb-4163-acb1-056902a31608
+CSeq: 1751 PRACK
+Route: <sip:10.20.10.119;lr;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793;ftag=4baac352-a3f2-42ad-80d8-2c992a3a5793;Hpt=0;CxtId=3>
+RAck: 2 1749 INVITE
+User-Agent: CallCollectService
+Allow: ACK, BYE, CANCEL, INFO, INVITE, NOTIFY, OPTIONS, PRACK, REFER, REGISTER, SUBSCRIBE
+Content-Length:  0
+
+
+--end msg--
+04:17:22.326      udp0x634392923860  ......Request msg PRACK/cseq=1751 (tdta0x73a378008870) sent successfully
+04:17:22.326      tsx0x73a37800a830  ......State changed from Null to Calling, event=TX_MSG
+04:17:22.326      dlg0x73a380001250  .......Transaction tsx0x73a37800a830 state changed to Calling
+04:17:22.327         sip_endpoint.c  Processing incoming message: Response msg 200/PRACK/cseq=1751 (rdata0x73a378006898)
+04:17:22.327           pjsua_core.c  .RX 381 bytes Response msg 200/PRACK/cseq=1751 (rdata0x73a378006898) from UDP 10.20.10.119:5060:
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 10.20.10.119:15061;received=10.20.10.119;rport=15061;branch=z9hG4bKPjfe9178c6-d3dc-49b0-93bb-1a6674797947
+From:  "+967696522" <sip:+967696522@10.20.10.119;user=phone>;tag=4baac352-a3f2-42ad-80d8-2c992a3a5793
+To:  <sip:787696522@10.20.10.119;user=phone>;tag=1
+Call-ID: 63251a90-33cb-4163-acb1-056902a31608
+CSeq: 1751 PRACK
+Content-Length: 0
+
+
+--end msg--
+04:17:22.327      tsx0x73a37800a830  .Incoming Response msg 200/PRACK/cseq=1751 (rdata0x73a378006898) in state Calling
+04:17:22.327      tsx0x73a37800a830  ..State changed from Calling to Completed, event=RX_MSG
+04:17:22.327      dlg0x73a380001250  ...Received Response msg 200/PRACK/cseq=1751 (rdata0x73a378006898)
+04:17:22.327      dlg0x73a380001250  ...Transaction tsx0x73a37800a830 state changed to Completed
+04:17:27.325      tsx0x73a378003b90  Timeout timer event
+04:17:27.325      tsx0x73a378003b90  .State changed from Completed to Terminated, event=TIMER
+04:17:27.325      dlg0x73a380001250  ..Transaction tsx0x73a378003b90 state changed to Terminated
+04:17:27.325      tsx0x73a378003b90  Timeout timer event
+04:17:27.325      tsx0x73a378003b90  .State changed from Terminated to Destroyed, event=TIMER
+04:17:27.325     tdta0x73a378001bd0  ..Destroying txdata Request msg PRACK/cseq=1750 (tdta0x73a378001bd0)
+04:17:27.325      tsx0x73a378003b90  Transaction destroyed!
+04:17:27.327      tsx0x73a37800a830  Timeout timer event
+04:17:27.327      tsx0x73a37800a830  .State changed from Completed to Terminated, event=TIMER
+04:17:27.327      dlg0x73a380001250  ..Transaction tsx0x73a37800a830 state changed to Terminated
+04:17:27.327      tsx0x73a37800a830  Timeout timer event
+04:17:27.327      tsx0x73a37800a830  .State changed from Terminated to Destroyed, event=TIMER
+04:17:27.32730  .State changed from Terminated to Destroyed, event=TIMER
+04:17:26.816     tdta0x73a378008870  ..Destroying txdata Request msg PRACK/cseq=14180 (tdta0x73a378008870)
+04:17:26.816      tsx0x73a37800a830  Transaction destroyed!
+04:17:31.816           pjsua_call.c  Call 0 hanging up: code=0..
+04:17:31.816          pjsua_media.c  .Call 0: deinitializing media..
+04:17:31.816          pjsua_media.c  ..
+  [EARLY] To: <sip:7883872571@10.20.10.119;user=phone>;tag=1
+    Call time: 00h:00m:00s, 1st res in 4 ms, conn in 0ms
+04:17:31.816          pjsua_media.c  ..Call 0: cleaning up provisional media, prov_med_cnt=1, med_cnt=0
+04:17:31.816      udp0x73a3800038a0  ..UDP media transport already stopped
+04:17:31.816     srtp0x73a380003ed0  ..Destroying SRTP transport
+04:17:31.816      udp0x73a3800038a0  ..UDP media transport destroying
+04:17:31.816      udp0x73a3800038a0  ..UDP media transport destroyed
+04:17:31.816     srtp0x73a380003ed0  ..SRTP transport destroyed
+04:17:31.816             sip_util.c  ..Request msg CANCEL/cseq=14178 (tdta0x73a378004bd0) created.
+04:17:31.816      inv0x73a380001250  ..Sending Request msg CANCEL/cseq=14178 (tdta0x73a378004bd0)
+04:17:31.816      dlg0x73a380001250  ...Sending Request msg CANCEL/cseq=14178 (tdta0x73a378004bd0)
+04:17:31.816      tsx0x73a378005be0  ....Transaction created for Request msg CANCEL/cseq=14178 (tdta0x73a378004bd0)
+04:17:31.816      tsx0x73a378005be0  ...Sending Request msg CANCEL/cseq=14178 (tdta0x73a378004bd0) in state Null
+04:17:31.816             sip_util.c  ....Request msg CANCEL/cseq=14178 (tdta0x73a378004bd0): skipping target resolution because address is already set
+04:17:31.816             sip_util.c  ....Resorting target addresses based on IPv4 preference
+04:17:31.816           pjsua_core.c  ....TX 580 bytes Request msg CANCEL/cseq=14178 (tdta0x73a378004bd0) to UDP 10.20.10.119:5060:
+CANCEL sip:7883872571@10.20.10.119;user=phone SIP/2.0
+Via: SIP/2.0/UDP 10.20.10.119:15060;rport;branch=z9hG4bKPj9967628c-5a46-4421-8a4e-08a776a84f29
+Max-Forwards: 70
+From: "+9683872571" <sip:+9683872571@10.20.10.119;user=phone>;tag=281746cf-33db-442d-8dff-c0b9161c0b1f
+To: <sip:7883872571@10.20.10.119;user=phone>
+Call-ID: 500a8486-2666-47f6-a066-25fdb3aa78ee
+CSeq: 14178 CANCEL
+Route: <sip:10.20.10.119:5060;transport=udp;lr>
+User-Agent: CallCollectService
+Allow: ACK, BYE, CANCEL, INFO, INVITE, NOTIFY, OPTIONS, PRACK, REFER, REGISTER, SUBSCRIBE
+Content-Length:  0
+
+
+--end msg--
+04:17:31.816      udp0x634392923860  ....Request msg CANCEL/cseq=14178 (tdta0x73a378004bd0) sent successfully
+04:17:31.816      tsx0x73a378005be0  ....State changed from Null to Calling, event=TX_MSG
+04:17:31.816      dlg0x73a380001250  .....Transaction tsx0x73a378005be0 state changed to Calling
+04:17:31.817         sip_endpoint.c  Processing incoming message: Response msg 200/CANCEL/cseq=14178 (rdata0x73a378006898)
+04:17:31.817           pjsua_core.c  .RX 477 bytes Response msg 200/CANCEL/cseq=14178 (rdata0x73a378006898) from UDP 10.20.10.119:5060:
+SIP/2.0 200 canceling
+Via: SIP/2.0/UDP 10.20.10.119:15060;rport=15060;received=10.20.10.119;branch=z9hG4bKPj9967628c-5a46-4421-8a4e-08a776a84f29
+From: "+9683872571" <sip:+9683872571@10.20.10.119;user=phone>;tag=281746cf-33db-442d-8dff-c0b9161c0b1f
+To: <sip:7883872571@10.20.10.119;user=phone>;tag=941350a0a316326d88d5aa4fa6c8822e-fb1ac4db
+Call-ID: 500a8486-2666-47f6-a066-25fdb3aa78ee
+CSeq: 14178 CANCEL
+Server: kamailio (6.1.0-pre0 (x86_64/linux))
+Content-Length: 0
+
+
+--end msg--
+04:17:31.817      tsx0x73a378005be0  .Incoming Response msg 200/CANCEL/cseq=14178 (rdata0x73a378006898) in state Calling
+04:17:31.817      tsx0x73a378005be0  ..State changed from Calling to Completed, event=RX_MSG
+04:17:31.817      dlg0x73a380001250  ...Received Response msg 200/CANCEL/cseq=14178 (rdata0x73a378006898)
+04:17:31.817      dlg0x73a380001250  ...Transaction tsx0x73a378005be0 state changed to Completed
+04:17:31.818         sip_endpoint.c  Processing incoming message: Response msg 487/INVITE/cseq=14178 (rdata0x73a378006898)
+04:17:31.818           pjsua_core.c  .RX 402 byte     tdta0x73a378008870  ..Destroying txdata Request msg PRACK/cseq=1751 (tdta0x73a378008870)
+04:17:27.327      tsx0x73a37800a830  Transaction destroyed!
+04:17:32.328           pjsua_call.c  Call 0 hanging up: code=0..
+04:17:32.328          pjsua_media.c  .Call 0: deinitializing media..
+04:17:32.328          pjsua_media.c  ..
+  [EARLY] To: <sip:787696522@10.20.10.119;user=phone>;tag=1
+    Call time: 00h:00m:00s, 1st res in 3 ms, conn in 0ms
+04:17:32.328          pjsua_media.c  ..Call 0: cleaning up provisional media, prov_med_cnt=1, med_cnt=0
+04:17:32.328      udp0x73a3800038a0  ..UDP media transport already stopped
+04:17:32.328     srtp0x73a380003ed0  ..Destroying SRTP transport
+04:17:32.328      udp0x73a3800038a0  ..UDP media transport destroying
+04:17:32.328      udp0x73a3800038a0  ..UDP media transport destroyed
+04:17:32.328     srtp0x73a380003ed0  ..SRTP transport destroyed
+04:17:32.328             sip_util.c  ..Request msg CANCEL/cseq=1749 (tdta0x73a378004bd0) created.
+04:17:32.328      inv0x73a380001250  ..Sending Request msg CANCEL/cseq=1749 (tdta0x73a378004bd0)
+04:17:32.328      dlg0x73a380001250  ...Sending Request msg CANCEL/cseq=1749 (tdta0x73a378004bd0)
+04:17:32.328      tsx0x73a378005be0  ....Transaction created for Request msg CANCEL/cseq=1749 (tdta0x73a378004bd0)
+04:17:32.328      tsx0x73a378005be0  ...Sending Request msg CANCEL/cseq=1749 (tdta0x73a378004bd0) in state Null
+04:17:32.328             sip_util.c  ....Request msg CANCEL/cseq=1749 (tdta0x73a378004bd0): skipping target resolution because address is already set
+04:17:32.328             sip_util.c  ....Resorting target addresses based on IPv4 preference
+04:17:32.328           pjsua_core.c  ....TX 575 bytes Request msg CANCEL/cseq=1749 (tdta0x73a378004bd0) to UDP 10.20.10.119:5060:
+CANCEL sip:787696522@10.20.10.119;user=phone SIP/2.0
+Via: SIP/2.0/UDP 10.20.10.119:15061;rport;branch=z9hG4bKPj9d76c46b-fdf5-4283-8b85-4e7825c04249
+Max-Forwards: 70
+From: "+967696522" <sip:+967696522@10.20.10.119;user=phone>;tag=4baac352-a3f2-42ad-80d8-2c992a3a5793
+To: <sip:787696522@10.20.10.119;user=phone>
+Call-ID: 63251a90-33cb-4163-acb1-056902a31608
+CSeq: 1749 CANCEL
+Route: <sip:10.20.10.119:5060;transport=udp;lr>
+User-Agent: CallCollectService
+Allow: ACK, BYE, CANCEL, INFO, INVITE, NOTIFY, OPTIONS, PRACK, REFER, REGISTER, SUBSCRIBE
+Content-Length:  0
+
+
+--end msg--
+04:17:32.328      udp0x634392923860  ....Request msg CANCEL/cseq=1749 (tdta0x73a378004bd0) sent successfully
+04:17:32.328      tsx0x73a378005be0  ....State changed from Null to Calling, event=TX_MSG
+04:17:32.328      dlg0x73a380001250  .....Transaction tsx0x73a378005be0 state changed to Calling
+04:17:32.328         sip_endpoint.c  Processing incoming message: Response msg 200/CANCEL/cseq=1749 (rdata0x73a378006898)
+04:17:32.328           pjsua_core.c  .RX 473 bytes Response msg 200/CANCEL/cseq=1749 (rdata0x73a378006898) from UDP 10.20.10.119:5060:
+SIP/2.0 200 canceling
+Via: SIP/2.0/UDP 10.20.10.119:15061;rport=15061;received=10.20.10.119;branch=z9hG4bKPj9d76c46b-fdf5-4283-8b85-4e7825c04249
+From: "+967696522" <sip:+967696522@10.20.10.119;user=phone>;tag=4baac352-a3f2-42ad-80d8-2c992a3a5793
+To: <sip:787696522@10.20.10.119;user=phone>;tag=941350a0a316326d88d5aa4fa6c8822e-b2da93f5
+Call-ID: 63251a90-33cb-4163-acb1-056902a31608
+CSeq: 1749 CANCEL
+Server: kamailio (6.1.0-pre0 (x86_64/linux))
+Content-Length: 0
+
+
+--end msg--
+04:17:32.328      tsx0x73a378005be0  .Incoming Response msg 200/CANCEL/cseq=1749 (rdata0x73a378006898) in state Calling
+04:17:32.328      tsx0x73a378005be0  ..State changed from Calling to Completed, event=RX_MSG
+04:17:32.328      dlg0x73a380001250  ...Received Response msg 200/CANCEL/cseq=1749 (rdata0x73a378006898)
+04:17:32.328      dlg0x73a380001250  ...Transaction tsx0x73a378005be0 state changed to Completed
+04:17:32.330         sip_endpoint.c  Processing incoming message: Response msg 487/INVITE/cseq=1749 (rdata0x73a378006898)
+04:17:32.330           pjsua_core.c  .RX 398 bytes Response msg 487/INVITE/cseq=1749 (rdata0x73a378006898) from UDP 10.20.10.119:5060:
+SIP/2.0 487

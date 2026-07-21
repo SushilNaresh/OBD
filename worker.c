@@ -77,8 +77,10 @@ static void worker_sig_handler(int sig)
 {
     (void)sig;
     w_running = 0;
-    if (w_unix_sock >= 0)
+    if (w_unix_sock >= 0) {
         close(w_unix_sock);
+        w_unix_sock = -1;
+    }
 }
 
 static void worker_crash_handler(int sig)
@@ -127,7 +129,7 @@ static void *recv_thread(void *arg)
         pthread_mutex_lock(&w_recvq_mutex);
         if (recvq_push(&w_recvq, &req) != 0) {
             atomic_fetch_add(&w_recvq_dropped, 1);
-            LOG(w_tag, req.request_id, "recvq_overflow",
+            LOG(OBD_LOG_WARN, w_tag, req.request_id, "recvq_overflow",
                 ",\"dropped_total\":%" PRIu64, atomic_load(&w_recvq_dropped));
         } else {
             pthread_cond_signal(&w_recvq_cond);
@@ -160,7 +162,7 @@ static void *dispatch_thread(void *arg)
 
         if (!w_running) break;
 
-        LOG(w_tag, req.request_id, "invite_sent",
+        LOG(OBD_LOG_INFO, w_tag, req.request_id, "invite_sent",
             ",\"to\":\"%s\",\"dest\":\"%s\"",
             req.called_msisdn, req.dest_id);
         struct timespec t_ds, t_de;
@@ -171,7 +173,7 @@ static void *dispatch_thread(void *arg)
         int dispatch_ms = (int)((t_de.tv_sec - t_ds.tv_sec) * 1000 +
                                 (t_de.tv_nsec - t_ds.tv_nsec) / 1000000);
         if (dispatch_ms > 50)
-            LOG(w_tag, req.request_id, "dispatch_slow",
+            LOG(OBD_LOG_WARN, w_tag, req.request_id, "dispatch_slow",
                 ",\"dispatch_ms\":%d", dispatch_ms);
     }
     return NULL;
@@ -184,20 +186,24 @@ static void *report_thread(void *arg)
     OBDReport report;
 
     while (w_running) {
-        if (lfq_pop(&w_compq, &report) == 0) {
-            udp_report_send(&report);
-            LOG(w_tag, report.request_id, "sent",
-                ",\"outcome\":\"%s\",\"sip\":%d,\"ms\":%d",
-                outcome_str(report.outcome), report.sip_final_status, report.duration_ms);
-        } else {
-            /* Block until signalled instead of busy-polling every 10ms */
+        pthread_mutex_lock(&w_compq_mutex);
+        /* Wait under the mutex so worker_signal_report() can never fire
+         * between the pop-check and the wait — eliminates the missed-signal
+         * busy loop that caused 0.7% idle CPU per worker. */
+        while (lfq_pop(&w_compq, &report) != 0 && w_running) {
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
             ts.tv_sec += 1;
-            pthread_mutex_lock(&w_compq_mutex);
             pthread_cond_timedwait(&w_compq_cond, &w_compq_mutex, &ts);
-            pthread_mutex_unlock(&w_compq_mutex);
         }
+        pthread_mutex_unlock(&w_compq_mutex);
+
+        if (!w_running) break;
+
+        udp_report_send(&report);
+        LOG(OBD_LOG_INFO, w_tag, report.request_id, "sent",
+            ",\"outcome\":\"%s\",\"sip\":%d,\"ms\":%d",
+            outcome_str(report.outcome), report.sip_final_status, report.duration_ms);
     }
     return NULL;
 }
@@ -227,10 +233,11 @@ static void *heartbeat_thread(void *arg)
         /* Log worker health every 30 heartbeats (~30 seconds) */
         if (++hb_count % 30 == 0) {
             sip_engine_log_health();
+            sip_engine_reap_orphans();
             uint64_t head  = atomic_load_explicit(&w_recvq.head, memory_order_acquire);
             uint64_t tail  = atomic_load_explicit(&w_recvq.tail, memory_order_acquire);
             uint64_t depth = (head >= tail) ? (head - tail) : 0;
-            LOG(w_tag, "", "worker_recvq_stats",
+            LOG(OBD_LOG_INFO, w_tag, "", "worker_recvq_stats",
                 ",\"recvq_depth\":%" PRIu64
                 ",\"recv_total\":%" PRIu64
                 ",\"dispatch_total\":%" PRIu64
@@ -256,6 +263,9 @@ void worker_run(WorkerConfig *cfg)
     signal(SIGFPE,  worker_crash_handler);
     signal(SIGILL,  worker_crash_handler);
 
+    /* Each worker needs its own independent lock fd — inherited fds share
+     * the parent's open file description, making flock() non-exclusive. */
+    obd_log_reopen_lock();
     memcpy(&w_cfg, cfg, sizeof(w_cfg));
     snprintf(w_tag, sizeof(w_tag), "w%d", cfg->worker_id);
 
@@ -267,7 +277,7 @@ void worker_run(WorkerConfig *cfg)
 
     /* Init SIP engine */
     if (sip_engine_init(cfg, &w_compq, worker_signal_report) != 0) {
-        LOG(w_tag, "", "sip_init_failed",
+        LOG(OBD_LOG_ERROR, w_tag, "", "sip_init_failed",
             ",\"sip_port\":%d,\"heartbeat_port\":%d,\"bind_ip\":\"%s\"",
             cfg->sip_port, cfg->heartbeat_port,
             cfg->local_ip[0] ? cfg->local_ip : "0.0.0.0");
@@ -280,7 +290,7 @@ void worker_run(WorkerConfig *cfg)
     /* Create Unix DGRAM socket */
     w_unix_sock = socket(AF_UNIX, SOCK_DGRAM, 0);
     if (w_unix_sock < 0) {
-        LOG(w_tag, "", "worker_socket_create_failed",
+        LOG(OBD_LOG_ERROR, w_tag, "", "worker_socket_create_failed",
             ",\"reason\":\"%s\"", strerror(errno));
         _exit(1);
     }
@@ -296,13 +306,13 @@ void worker_run(WorkerConfig *cfg)
     snprintf(addr.sun_path, sizeof(addr.sun_path), "/tmp/obd_worker_%d.sock", cfg->worker_id);
     unlink(addr.sun_path);
     if (bind(w_unix_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        LOG(w_tag, "", "worker_socket_bind_failed",
+        LOG(OBD_LOG_ERROR, w_tag, "", "worker_socket_bind_failed",
             ",\"path\":\"%s\",\"reason\":\"%s\"",
             addr.sun_path, strerror(errno));
         _exit(1);
     }
 
-    LOG(w_tag, "", "sip_ready",
+    LOG(OBD_LOG_INFO, w_tag, "", "sip_ready",
         ",\"sip_port\":%d,\"advertised_port\":%d,\"heartbeat_port\":%d,\"max_calls\":%d,\"t1_ms\":%d,\"use_mux\":\"%s\",\"pjsua_max_calls\":%d,\"pjsua_max_acc\":%d,\"recvq_size\":%d",
         cfg->sip_port,
         worker_cfg_use_mux(cfg) ? cfg->sip_mux_port : cfg->sip_port,
@@ -336,6 +346,7 @@ void worker_run(WorkerConfig *cfg)
     /* Cleanup */
     sip_engine_shutdown();
     udp_report_shutdown();
-    close(w_unix_sock);
+    if (w_unix_sock >= 0)
+        close(w_unix_sock);
     unlink(addr.sun_path);
 }

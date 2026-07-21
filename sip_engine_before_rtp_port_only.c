@@ -1,26 +1,19 @@
 /*
- * Version: 2.1.3
+ * Version: 2.0.9
  * sip_engine.c — Slab pool, async dispatch, PJSIP callbacks, outcome classification with high-fidelity leg tracing
- * Fix: Removed SIP port hunting loop — each worker binds its pre-assigned port only.
- *      Port hunting caused workers to bind on wrong high ports when a previous OBD run
- *      was still alive, breaking SIP routing silently.
+ * Incorporates dynamic port hunting to resolve and prevent EADDRINUSE startup collisions.
  */
-static const char *obd_version = "OBD-VERSION:2.1.3";
 #include <pjsua-lib/pjsua.h>
 #include <pjsip/sip_util.h>
 #include <pjsip-ua/sip_100rel.h>
 #include <pjsip/sip_module.h>
 #include <pj/ioqueue.h>
-#include <pjmedia/transport_udp.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
 #include <stdatomic.h>
 #include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 #include <errno.h>
 #include "obd.h"
 
@@ -34,10 +27,7 @@ typedef struct CallCtxEx {
     OBDRequest       req;
     pjsua_call_id    call_id;
     pjsua_acc_id     acc_id;
-    char             from_uri[256];     /* stable storage for acc_cfg.id (pj_str pointer) */
-    char             contact_uri[256];  /* stable storage for acc_cfg.force_contact */
-    pj_timer_entry   timer;          /* id=0: main watchdog; id=1: progress guard */
-    pj_timer_entry   cancel_timer;   /* id=2: deferred CANCEL after PRACK 200 OK */
+    pj_timer_entry   timer;
     pj_bool_t        early_progress;
     pj_bool_t        ringing;
     pj_bool_t        prack_sent;
@@ -48,7 +38,6 @@ typedef struct CallCtxEx {
     pj_bool_t        cancel_after_prack; /* send CANCEL as soon as pending PRACK completes */
     int              last_rseq;       /* RSeq of last reliable provisional received */
     int              final_sip_status;  /* authoritative final status from INVITE tsx */
-    pj_bool_t        media_stats_logged;
     struct timespec   start_time;
     _Atomic int       active;
 } CallCtxEx;
@@ -60,8 +49,6 @@ static CallCtxEx *g_slab_pool;
 static _Atomic(CallCtxEx *) g_slab_free;
 static int g_slab_size;
 static _Atomic int g_active_calls = 0;
-static _Atomic int g_active_accs = 0;
-static _Atomic unsigned g_rtp_port_cursor = 0;
 
 static void slab_init(void)
 {
@@ -80,11 +67,11 @@ static CallCtxEx *slab_alloc(void)
     CallCtxEx *head;
     do {
         head = atomic_load(&g_slab_free);
-        if (!head) return NULL;   /* counter NOT incremented on failure */
+        if (!head) return NULL;
     } while (!atomic_compare_exchange_weak(&g_slab_free, &head, head->next_free));
     memset(head, 0, sizeof(*head));
     atomic_store(&head->active, 1);
-    atomic_fetch_add(&g_active_calls, 1);  /* incremented only on success */
+    atomic_fetch_add(&g_active_calls, 1);
     return head;
 }
 
@@ -118,38 +105,6 @@ int sip_engine_get_active_calls(void)
     return atomic_load(&g_active_calls);
 }
 
-/* Reap any PJSIP calls that have no matching ctx — orphaned by find_ctx race.
- * Called periodically from the worker health-check path. */
-void sip_engine_reap_orphans(void)
-{
-    pjsua_call_id ids[PJSUA_MAX_CALLS];
-    unsigned count = PJ_ARRAY_SIZE(ids);
-    if (pjsua_enum_calls(ids, &count) != PJ_SUCCESS) return;
-    for (unsigned i = 0; i < count; i++) {
-        int found = 0;
-        for (int j = 0; j < g_slab_size; j++) {
-            if (atomic_load(&g_slab_pool[j].active) && g_slab_pool[j].call_id == ids[i]) {
-                found = 1; break;
-            }
-        }
-        if (!found) {
-            LOG(OBD_LOG_WARN, g_tag, "", "orphan_call_reaped", ",\"call_id\":%d", ids[i]);
-            pjsua_call_hangup(ids[i], 0, NULL, NULL);
-        }
-    }
-}
-
-/* Log PJSIP pool and call slot usage — call periodically or at capacity events */
-void sip_engine_log_health(void)
-{
-    int active = atomic_load(&g_active_calls);
-    LOG(OBD_LOG_INFO, g_tag, "", "worker_health",
-        ",\"active_calls\":%d,\"max_calls\":%d,\"pjsua_call_count\":%d,\"pjsua_max_calls\":%d,\"active_accs\":%d,\"max_acc\":%d",
-        active, OBD_CALLS_PER_WORKER,
-        (int)pjsua_call_get_count(), PJSUA_MAX_CALLS,
-        atomic_load(&g_active_accs), PJSUA_MAX_ACC);
-}
-
 static const char *pj_status_text(pj_status_t status, char *buf, pj_size_t sz)
 {
     if (!buf || sz == 0) return "";
@@ -164,7 +119,7 @@ static void log_sip_init_failure(const char *stage, const WorkerConfig *cfg, pj_
     /* Derive native OS error if status is in the PJ_ERRNO_START_USER range (120000 on POSIX) */
     int native_os_err = (status >= 120000) ? (status - 120000) : (int)status;
 
-    LOG(OBD_LOG_ERROR, g_tag, "", "sip_stack_init_failed",
+    LOG(g_tag, "", "sip_stack_init_failed",
         ",\"stage\":\"%s\",\"sip_port\":%d,\"heartbeat_port\":%d,\"bind_ip\":\"%s\",\"status\":%d,\"native_os_err\":%d,\"reason\":\"%s\",\"sys_errno\":%d,\"sys_err_str\":\"%s\"",
         stage, cfg->sip_port, cfg->heartbeat_port,
         cfg->local_ip[0] ? cfg->local_ip : "0.0.0.0",
@@ -318,7 +273,7 @@ static CallCtxEx *find_ctx(pjsua_call_id call_id)
         }
     }
 
-    LOG(OBD_LOG_WARN, "sip_engine", "", "call_ctx_missing", ",\"call_id\":%d", call_id);
+    LOG("sip_engine", "", "call_ctx_missing", ",\"call_id\":%d", call_id);
     return NULL;
 }
 
@@ -359,120 +314,6 @@ static CallOutcome classify_outcome(CallCtxEx *ctx, int sip_status)
     return OUTCOME_UNKNOWN;
 }
 
-static const char *media_dir_name(pjmedia_dir dir)
-{
-    switch (dir) {
-        case PJMEDIA_DIR_NONE:              return "inactive";
-        case PJMEDIA_DIR_ENCODING:          return "sendonly";
-        case PJMEDIA_DIR_DECODING:          return "recvonly";
-        case PJMEDIA_DIR_ENCODING_DECODING: return "sendrecv";
-        default:                            return "unknown";
-    }
-}
-
-static const char *media_status_name(pjsua_call_media_status status)
-{
-    switch (status) {
-        case PJSUA_CALL_MEDIA_NONE:       return "NONE";
-        case PJSUA_CALL_MEDIA_ACTIVE:     return "ACTIVE";
-        case PJSUA_CALL_MEDIA_LOCAL_HOLD: return "LOCAL_HOLD";
-        case PJSUA_CALL_MEDIA_REMOTE_HOLD:return "REMOTE_HOLD";
-        case PJSUA_CALL_MEDIA_ERROR:      return "ERROR";
-        default:                          return "UNKNOWN";
-    }
-}
-
-static const char *media_type_name(pjmedia_type type)
-{
-    switch (type) {
-        case PJMEDIA_TYPE_AUDIO:       return "audio";
-        case PJMEDIA_TYPE_VIDEO:       return "video";
-        case PJMEDIA_TYPE_TEXT:        return "text";
-        case PJMEDIA_TYPE_APPLICATION: return "application";
-        case PJMEDIA_TYPE_NONE:        return "none";
-        default:                       return "unknown";
-    }
-}
-
-static double usec_to_ms(int usec)
-{
-    return usec / 1000.0;
-}
-
-static void log_call_media_stats(CallCtxEx *ctx, const char *phase)
-{
-    pjsua_call_info ci;
-    pj_status_t st;
-
-    if (!ctx || ctx->media_stats_logged || ctx->call_id == PJSUA_INVALID_ID)
-        return;
-    ctx->media_stats_logged = PJ_TRUE;
-
-    st = pjsua_call_get_info(ctx->call_id, &ci);
-    if (st != PJ_SUCCESS) {
-        char errbuf[128];
-        LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_media_stats_unavailable",
-            ",\"phase\":\"%s\",\"call_id\":%d,\"status\":%d,\"reason\":\"%s\"",
-            phase, ctx->call_id, st, pj_status_text(st, errbuf, sizeof(errbuf)));
-        return;
-    }
-
-    if (ci.media_cnt == 0) {
-        LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_media_rtp_stats",
-            ",\"phase\":\"%s\",\"call_id\":%d,\"media_count\":0", phase, ctx->call_id);
-        return;
-    }
-
-    for (unsigned i = 0; i < ci.media_cnt; i++) {
-        unsigned med_idx = ci.media[i].index;
-        pjsua_stream_stat stat;
-        pjsua_stream_info sinfo;
-        char local_addr[80] = "";
-        char peer_addr[80] = "";
-        char errbuf[128];
-
-        if (ci.media[i].type != PJMEDIA_TYPE_AUDIO)
-            continue;
-
-        memset(&stat, 0, sizeof(stat));
-        memset(&sinfo, 0, sizeof(sinfo));
-
-        st = pjsua_call_get_stream_info(ctx->call_id, med_idx, &sinfo);
-        if (st == PJ_SUCCESS && sinfo.type == PJMEDIA_TYPE_AUDIO) {
-            if (pj_sockaddr_has_addr(&sinfo.info.aud.local_addr))
-                pj_sockaddr_print(&sinfo.info.aud.local_addr, local_addr, sizeof(local_addr), 1);
-            if (pj_sockaddr_has_addr(&sinfo.info.aud.rem_addr))
-                pj_sockaddr_print(&sinfo.info.aud.rem_addr, peer_addr, sizeof(peer_addr), 1);
-        } else {
-            snprintf(local_addr, sizeof(local_addr), "unavailable");
-            snprintf(peer_addr, sizeof(peer_addr), "unavailable");
-        }
-
-        st = pjsua_call_get_stream_stat(ctx->call_id, med_idx, &stat);
-        if (st != PJ_SUCCESS) {
-            LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_media_stats_unavailable",
-                ",\"phase\":\"%s\",\"call_id\":%d,\"media_index\":%u,\"status\":%d,\"reason\":\"%s\"",
-                phase, ctx->call_id, med_idx, st, pj_status_text(st, errbuf, sizeof(errbuf)));
-            continue;
-        }
-
-        LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_media_rtp_stats",
-            ",\"phase\":\"%s\",\"call_id\":%d,\"media_index\":%u,\"media_type\":\"%s\",\"media_status\":\"%s\",\"dir\":\"%s\",\"local\":\"%s\",\"peer\":\"%s\",\"rx_pt\":%u,\"tx_pt\":%u,\"rx_pkt\":%u,\"rx_bytes\":%u,\"rx_loss\":%u,\"rx_discard\":%u,\"rx_dup\":%u,\"rx_reorder\":%u,\"rx_jitter_last_ms\":%.3f,\"rx_jitter_avg_ms\":%.3f,\"tx_pkt\":%u,\"tx_bytes\":%u,\"tx_loss\":%u,\"tx_discard\":%u,\"tx_dup\":%u,\"tx_reorder\":%u,\"tx_jitter_last_ms\":%.3f,\"tx_jitter_avg_ms\":%.3f,\"rtt_last_ms\":%.3f,\"rtt_avg_ms\":%.3f",
-            phase, ctx->call_id, med_idx, media_type_name(ci.media[i].type),
-            media_status_name(ci.media[i].status), media_dir_name(ci.media[i].dir),
-            local_addr[0] ? local_addr : "unknown", peer_addr[0] ? peer_addr : "unknown",
-            (st == PJ_SUCCESS && sinfo.type == PJMEDIA_TYPE_AUDIO) ? sinfo.info.aud.rx_pt : 0,
-            (st == PJ_SUCCESS && sinfo.type == PJMEDIA_TYPE_AUDIO) ? sinfo.info.aud.tx_pt : 0,
-            stat.rtcp.rx.pkt, stat.rtcp.rx.bytes, stat.rtcp.rx.loss,
-            stat.rtcp.rx.discard, stat.rtcp.rx.dup, stat.rtcp.rx.reorder,
-            usec_to_ms(stat.rtcp.rx.jitter.last), usec_to_ms(stat.rtcp.rx.jitter.mean),
-            stat.rtcp.tx.pkt, stat.rtcp.tx.bytes, stat.rtcp.tx.loss,
-            stat.rtcp.tx.discard, stat.rtcp.tx.dup, stat.rtcp.tx.reorder,
-            usec_to_ms(stat.rtcp.tx.jitter.last), usec_to_ms(stat.rtcp.tx.jitter.mean),
-            usec_to_ms(stat.rtcp.rtt.last), usec_to_ms(stat.rtcp.rtt.mean));
-    }
-}
-
 /* ================================================================== */
 /* finish_call — push report to LFQueue, free slab                     */
 /* ================================================================== */
@@ -480,7 +321,6 @@ static void finish_call(CallCtxEx *ctx, int sip_status)
 {
     if (ctx->done) return;
     ctx->done = PJ_TRUE;
-    log_call_media_stats(ctx, "teardown");
 
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -499,20 +339,25 @@ static void finish_call(CallCtxEx *ctx, int sip_status)
     lfq_push(g_compq, &report);
     if (g_signal_report_fn) g_signal_report_fn();
 
-    LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_teardown_complete",
-        ",\"call_id\":%d,\"sip_status\":%d,\"duration_ms\":%d,\"outcome\":\"%s\""
-        ",\"pjsua_call_count_before_del\":%d,\"active_accs\":%d",
-        ctx->call_id, sip_status, duration_ms, outcome_str(report.outcome),
-        (int)pjsua_call_get_count(), atomic_load(&g_active_accs));
+    /* Leg Teardown Complete Diagnostic Log */
+    LOG(g_tag, ctx->req.request_id, "leg_teardown_complete",
+        ",\"call_id\":%d,\"sip_status\":%d,\"duration_ms\":%d,\"outcome\":\"%s\"",
+        ctx->call_id, sip_status, duration_ms, outcome_str(report.outcome));
 
-    /* Defer acc_del to outside the DISCONNECTED callback via zero-delay timer (id=3).
-     * pjsua_acc_del() while a call is still referenced inside PJSIP's callback
-     * stack causes "deleting account while call still active" warnings and
-     * potential use-after-free in PJSIP internals. */
-    pj_timer_heap_t *th = pjsip_endpt_get_timer_heap(pjsua_get_pjsip_endpt());
-    pj_time_val zero = {0, 0};
-    pj_timer_entry_init(&ctx->cancel_timer, 3, ctx, &on_timeout);
-    pj_timer_heap_schedule(th, &ctx->cancel_timer, &zero);
+    /* Delete per-call account */
+    if (ctx->acc_id != PJSUA_INVALID_ID) {
+        pjsua_acc_del(ctx->acc_id);
+        LOG(g_tag, ctx->req.request_id, "acc_del", ",\"acc_id\":%d", ctx->acc_id);
+        ctx->acc_id = PJSUA_INVALID_ID;
+    }
+
+    int active_after = atomic_fetch_sub(&g_active_calls, 1) - 1;
+    if (active_after < 0) {
+        LOG(g_tag, ctx->req.request_id, "active_calls_underflow",
+            ",\"active_calls_after\":%d", active_after);
+    }
+    LOG(g_tag, ctx->req.request_id, "slab_free", ",\"active_calls\":%d", active_after);
+    slab_free(ctx);
 }
 
 static void arm_progress_cancel_timer(CallCtxEx *ctx)
@@ -526,39 +371,6 @@ static void arm_progress_cancel_timer(CallCtxEx *ctx)
     pj_timer_heap_schedule(th, &ctx->timer, &delay);
 }
 
-static void handle_provisional_response(CallCtxEx *ctx, pjsua_call_id call_id,
-                                        int sip_status, const char *source)
-{
-    if (sip_status == 180) {
-        pj_bool_t first_180 = !ctx->ringing;
-
-        ctx->early_progress     = PJ_TRUE;
-        ctx->ringing            = PJ_TRUE;
-        ctx->prack_pending      = PJ_TRUE;
-        ctx->cancel_after_prack = PJ_TRUE;
-
-        /* 180 Ringing supersedes the 183 guard timer. Wait for the 180 PRACK
-         * transaction to complete, then CANCEL from on_call_tsx_state(). */
-        pj_timer_heap_t *th180 = pjsip_endpt_get_timer_heap(pjsua_get_pjsip_endpt());
-        pj_timer_heap_cancel(th180, &ctx->timer);
-
-        if (first_180) {
-            LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_ringing_180",
-                ",\"call_id\":%d,\"role\":\"UAC\",\"source\":\"%s\",\"handling\":\"await_180_prack_then_cancel\"",
-                call_id, source);
-        }
-    } else if (sip_status == 183 && !ctx->early_progress) {
-        ctx->early_progress = PJ_TRUE;
-        ctx->prack_pending  = PJ_TRUE;
-        /* Safety watchdog until PRACK completes; after 200 PRACK, the normal
-         * cancel_ring_ms guard is armed by on_call_tsx_state(). */
-        arm_progress_cancel_timer(ctx);
-        LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_early_media_183",
-            ",\"call_id\":%d,\"source\":\"%s\",\"handling\":\"awaiting_prack_then_timer\"",
-            call_id, source);
-    }
-}
-
 /* ================================================================== */
 /* Timeout callback                                                     */
 /* ================================================================== */
@@ -567,45 +379,6 @@ static void on_timeout(pj_timer_heap_t *ht, pj_timer_entry *entry)
     (void)ht;
     CallCtxEx *ctx = (CallCtxEx *)entry->user_data;
     if (!ctx || !atomic_load(&ctx->active)) return;
-    if (entry->id != 3 && ctx->done) return;  /* call already finishing, ignore stale timers */
-
-    /* id=3: deferred acc_del + slab_free after DISCONNECTED callback unwinds.
-     * pjsua_acc_del() must not be called from within the DISCONNECTED callback
-     * while PJSIP still holds an internal reference to the call. */
-    if (entry->id == 3) {
-        if (ctx->acc_id != PJSUA_INVALID_ID) {
-            pj_status_t del_st = pjsua_acc_del(ctx->acc_id);
-            atomic_fetch_sub(&g_active_accs, 1);
-            if (del_st != PJ_SUCCESS) {
-                char errbuf[128];
-                LOG(OBD_LOG_ERROR, g_tag, ctx->req.request_id, "acc_del_failed",
-                    ",\"acc_id\":%d,\"status\":%d,\"reason\":\"%s\"",
-                    ctx->acc_id, del_st, pj_status_text(del_st, errbuf, sizeof(errbuf)));
-            } else {
-                LOG(OBD_LOG_DEBUG, g_tag, ctx->req.request_id, "acc_del",
-                    ",\"acc_id\":%d,\"active_accs_after\":%d", ctx->acc_id, atomic_load(&g_active_accs));
-            }
-            ctx->acc_id = PJSUA_INVALID_ID;
-        }
-        int active_after = atomic_fetch_sub(&g_active_calls, 1) - 1;
-        if (active_after < 0)
-            LOG(OBD_LOG_ERROR, g_tag, ctx->req.request_id, "active_calls_underflow",
-                ",\"active_calls_after\":%d", active_after);
-        LOG(OBD_LOG_DEBUG, g_tag, ctx->req.request_id, "slab_free", ",\"active_calls\":%d", active_after);
-        slab_free(ctx);
-        return;
-    }
-
-    /* id=2: zero-delay deferred CANCEL after PRACK 200 OK (180 path).
-     * Fires immediately after on_call_tsx_state unwinds, safely outside tsx callback. */
-    if (entry->id == 2) {
-        if (!ctx->done && ctx->call_id != PJSUA_INVALID_ID) {
-            LOG(OBD_LOG_DEBUG, g_tag, ctx->req.request_id, "leg_teardown_executing",
-                ",\"call_id\":%d,\"trigger\":\"deferred_cancel_timer\"", ctx->call_id);
-            pjsua_call_hangup(ctx->call_id, 0, NULL, NULL);
-        }
-        return;
-    }
 
     if (entry->id == 1) {
         /* Fallback timer — fires if 180 never arrives after 183.
@@ -614,11 +387,11 @@ static void on_timeout(pj_timer_heap_t *ht, pj_timer_entry *entry)
         if (!ctx->cancel_sent) {
             if (ctx->prack_pending) {
                 ctx->cancel_after_prack = PJ_TRUE;
-                LOG(OBD_LOG_DEBUG, g_tag, ctx->req.request_id, "leg_teardown_deferred",
+                LOG(g_tag, ctx->req.request_id, "leg_teardown_deferred",
                     ",\"call_id\":%d,\"trigger\":\"timer_prack_still_pending\"", ctx->call_id);
             } else {
                 ctx->cancel_sent = PJ_TRUE;
-                LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_teardown_initiating",
+                LOG(g_tag, ctx->req.request_id, "leg_teardown_initiating",
                     ",\"call_id\":%d,\"trigger\":\"progress_timeout_no_180\"", ctx->call_id);
                 if (ctx->call_id != PJSUA_INVALID_ID)
                     pjsua_call_hangup(ctx->call_id, 0, NULL, NULL);
@@ -629,7 +402,7 @@ static void on_timeout(pj_timer_heap_t *ht, pj_timer_entry *entry)
 
     /* Main timeout (id=0) — no useful provisional progress received at all */
     ctx->cancel_sent = PJ_TRUE;
-    LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_teardown_initiating", 
+    LOG(g_tag, ctx->req.request_id, "leg_teardown_initiating", 
         ",\"call_id\":%d,\"trigger\":\"main_timeout_no_18x_progress\"", ctx->call_id);
     if (ctx->call_id != PJSUA_INVALID_ID)
         pjsua_call_hangup(ctx->call_id, 0, NULL, NULL);
@@ -649,25 +422,39 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event *e)
     /* Structured JSON Tracing on INVITE Session States */
     switch (ci.state) {
         case PJSIP_INV_STATE_CALLING:
-            LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_invite_sent",
+            LOG(g_tag, ctx->req.request_id, "leg_invite_sent",
                 ",\"call_id\":%d,\"sip_status\":%d,\"dest\":\"%s\"", 
                 call_id, ci.last_status, ctx->req.called_msisdn);
             break;
 
         case PJSIP_INV_STATE_EARLY:
             if (ci.last_status == 180) {
-                handle_provisional_response(ctx, call_id, 180, "call_state");
+                ctx->early_progress     = PJ_TRUE;
+                ctx->ringing            = PJ_TRUE;
+                ctx->prack_pending      = PJ_TRUE;
+                ctx->cancel_after_prack = PJ_TRUE;  /* CANCEL immediately after 200 PRACK */
+                /* cancel any 183 timer still running — 180 supersedes it */
+                pj_timer_heap_t *th180 = pjsip_endpt_get_timer_heap(pjsua_get_pjsip_endpt());
+                pj_timer_heap_cancel(th180, &ctx->timer);
+                LOG(g_tag, ctx->req.request_id, "leg_ringing_180",
+                    ",\"call_id\":%d,\"role\":\"UAC\"", call_id);
             } else if (ci.last_status == 183) {
-                handle_provisional_response(ctx, call_id, 183, "call_state");
+                ctx->early_progress = PJ_TRUE;
+                ctx->prack_pending  = PJ_TRUE;
+                /* Do NOT arm timer here — timer starts after 200 PRACK is received.
+                 * Arm a safety watchdog only in case 200 PRACK never arrives. */
+                arm_progress_cancel_timer(ctx);
+                LOG(g_tag, ctx->req.request_id, "leg_early_media_183",
+                    ",\"call_id\":%d,\"handling\":\"awaiting_prack_then_timer\"", call_id);
             } else {
-                LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_state_change",
+                LOG(g_tag, ctx->req.request_id, "leg_state_change",
                     ",\"call_id\":%d,\"state\":%d,\"state_name\":\"EARLY\",\"sip_status\":%d",
                     call_id, ci.state, ci.last_status);
             }
             break;
 
         case PJSIP_INV_STATE_CONNECTING:
-            LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_connecting_200ok",
+            LOG(g_tag, ctx->req.request_id, "leg_connecting_200ok",
                 ",\"call_id\":%d,\"sip_status\":%d", call_id, ci.last_status);
             pj_timer_heap_t *th = pjsip_endpt_get_timer_heap(pjsua_get_pjsip_endpt());
             pj_timer_heap_cancel(th, &ctx->timer);
@@ -675,9 +462,9 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event *e)
 
         case PJSIP_INV_STATE_CONFIRMED:
             ctx->ack_sent = PJ_TRUE;
-            LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_established_ack",
+            LOG(g_tag, ctx->req.request_id, "leg_established_ack",
                 ",\"call_id\":%d", call_id);
-            LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_teardown_initiating", 
+            LOG(g_tag, ctx->req.request_id, "leg_teardown_initiating", 
                 ",\"call_id\":%d,\"trigger\":\"mca_answered_hangup\"", call_id);
             pjsua_call_hangup(call_id, 0, NULL, NULL);
             break;
@@ -685,23 +472,26 @@ static void on_call_state(pjsua_call_id call_id, pjsip_event *e)
         case PJSIP_INV_STATE_DISCONNECTED: {
             pj_timer_heap_t *th_disc = pjsip_endpt_get_timer_heap(pjsua_get_pjsip_endpt());
             pj_timer_heap_cancel(th_disc, &ctx->timer);
-            pj_timer_heap_cancel(th_disc, &ctx->cancel_timer);
-            log_call_media_stats(ctx, "disconnected");
-            int status = ctx->final_sip_status ? ctx->final_sip_status
-                       : (ctx->cancel_sent     ? 487
-                                               : ci.last_status);
-            LOG(OBD_LOG_DEBUG, g_tag, ctx->req.request_id, "leg_state_change",
-                ",\"call_id\":%d,\"state\":%d,\"state_name\":\"DISCONNECTED\",\"sip_status\":%d"
-                ",\"pjsua_call_count\":%d,\"active_calls\":%d,\"reason\":\"%.*s\"",
+            /* If CANCEL is in flight and we don't have the authoritative INVITE
+             * final status yet, defer finish_call — it will fire from
+             * on_call_tsx_state when the 487 INVITE tsx completes. */
+            if (ctx->cancel_sent && !ctx->final_sip_status) {
+                LOG(g_tag, ctx->req.request_id, "leg_state_change",
+                    ",\"call_id\":%d,\"state_name\":\"DISCONNECTED\",\"action\":\"deferred_awaiting_487\"",
+                    call_id);
+                break;
+            }
+            int status = ctx->final_sip_status ? ctx->final_sip_status : ci.last_status;
+            LOG(g_tag, ctx->req.request_id, "leg_state_change",
+                ",\"call_id\":%d,\"state\":%d,\"state_name\":\"DISCONNECTED\",\"sip_status\":%d,\"reason\":\"%.*s\"",
                 call_id, ci.state, status,
-                (int)pjsua_call_get_count(), atomic_load(&g_active_calls),
                 (int)ci.last_status_text.slen, ci.last_status_text.ptr);
             finish_call(ctx, status);
             break;
         }
 
         default:
-            LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_state_change",
+            LOG(g_tag, ctx->req.request_id, "leg_state_change",
                 ",\"call_id\":%d,\"state\":%d,\"state_name\":\"UNKNOWN\",\"sip_status\":%d", 
                 call_id, ci.state, ci.last_status);
             break;
@@ -719,19 +509,11 @@ static void on_call_tsx_state(pjsua_call_id call_id, pjsip_transaction *tsx, pjs
     if (!ctx) return;
 
     /* Trace transient SIP transaction events (PRACK, CANCEL, BYE) */
-    LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_tsx_update",
+    LOG(g_tag, ctx->req.request_id, "leg_tsx_update",
         ",\"call_id\":%d,\"method\":\"%.*s\",\"role\":\"%s\",\"status_code\":%d,\"state\":\"%s\"",
         call_id, (int)tsx->method.name.slen, tsx->method.name.ptr,
         (tsx->role == PJSIP_ROLE_UAC) ? "UAC" : "UAS",
         tsx->status_code, pjsip_tsx_state_str(tsx->state));
-
-    if (tsx->role == PJSIP_ROLE_UAC &&
-        pj_strcmp2(&tsx->method.name, "INVITE") == 0 &&
-        tsx->state == PJSIP_TSX_STATE_PROCEEDING &&
-        (tsx->status_code == 180 || tsx->status_code == 183))
-    {
-        handle_provisional_response(ctx, call_id, tsx->status_code, "invite_tsx");
-    }
 
     /* Capture authoritative final status from INVITE transaction and
      * call finish_call here when deferred from DISCONNECTED (cancel in flight). */
@@ -741,7 +523,7 @@ static void on_call_tsx_state(pjsua_call_id call_id, pjsip_transaction *tsx, pjs
         tsx->status_code >= 300)
     {
         ctx->final_sip_status = tsx->status_code;
-        LOG(OBD_LOG_DEBUG, g_tag, ctx->req.request_id, "leg_invite_final_status",
+        LOG(g_tag, ctx->req.request_id, "leg_invite_final_status",
             ",\"call_id\":%d,\"sip_status\":%d", call_id, tsx->status_code);
         /* If DISCONNECTED already fired but deferred, complete the report now */
         if (ctx->cancel_sent && !ctx->done)
@@ -754,17 +536,13 @@ static void on_call_tsx_state(pjsua_call_id call_id, pjsip_transaction *tsx, pjs
         (tsx->status_code == 181 || tsx->status_code == 302)) {
         pj_timer_heap_t *th = pjsip_endpt_get_timer_heap(pjsua_get_pjsip_endpt());
         pj_timer_heap_cancel(th, &ctx->timer);
-        LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_teardown_initiating", 
+        LOG(g_tag, ctx->req.request_id, "leg_teardown_initiating", 
             ",\"call_id\":%d,\"trigger\":\"redirection_response\"", call_id);
         pjsua_call_hangup(call_id, 0, NULL, NULL);
         return;
     }
 
-    /* PRACK 200 OK — clear pending flag and schedule CANCEL via zero-delay timer.
-     * pjsua_call_hangup() must NOT be called directly from a tsx callback —
-     * PJSIP does not allow re-entrant dialog/call operations from within tsx
-     * state callbacks. Schedule a zero-delay timer (id=2) to fire immediately
-     * after the callback unwinds, which safely issues the CANCEL. */
+    /* PRACK 200 OK — clear pending flag and send CANCEL if 180 was already seen */
     if (tsx->role == PJSIP_ROLE_UAC &&
         tsx->state == PJSIP_TSX_STATE_COMPLETED &&
         tsx->status_code == 200 &&
@@ -772,12 +550,11 @@ static void on_call_tsx_state(pjsua_call_id call_id, pjsip_transaction *tsx, pjs
     {
         ctx->prack_pending = PJ_FALSE;
         if (ctx->ringing && !ctx->cancel_sent) {
-            /* 180 path: CANCEL immediately. DISCONNECTED handler synthesizes
-             * 487 directly so we no longer need to defer via timer. */
+            /* 180 path: CANCEL immediately after PRACK acked regardless of any timer */
             ctx->cancel_sent = PJ_TRUE;
             pj_timer_heap_t *th = pjsip_endpt_get_timer_heap(pjsua_get_pjsip_endpt());
             pj_timer_heap_cancel(th, &ctx->timer);
-            LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_teardown_initiating",
+            LOG(g_tag, ctx->req.request_id, "leg_teardown_initiating",
                 ",\"call_id\":%d,\"trigger\":\"cancel_after_180_prack_acked\"", call_id);
             pjsua_call_hangup(call_id, 0, NULL, NULL);
         } else if (ctx->early_progress && !ctx->ringing && !ctx->cancel_sent) {
@@ -785,41 +562,10 @@ static void on_call_tsx_state(pjsua_call_id call_id, pjsip_transaction *tsx, pjs
             pj_timer_heap_t *th = pjsip_endpt_get_timer_heap(pjsua_get_pjsip_endpt());
             pj_timer_heap_cancel(th, &ctx->timer);
             arm_progress_cancel_timer(ctx);
-            LOG(OBD_LOG_DEBUG, g_tag, ctx->req.request_id, "leg_cancel_timer_started",
+            LOG(g_tag, ctx->req.request_id, "leg_cancel_timer_started",
                 ",\"call_id\":%d,\"cancel_ring_ms\":%d", call_id, g_wcfg.cancel_ring_ms);
         }
     }
-}
-
-/* Probe whether a UDP port pair (rtp, rtp+1) is free on the given IP.
- * Returns 1 if both ports are available, 0 if either is in use. */
-static int rtp_port_free(const char *ip, int port)
-{
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    inet_pton(AF_INET, ip, &sa.sin_addr);
-
-    for (int p = port; p <= port + 1; p++) {
-        int fd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (fd < 0) return 0;
-        int opt = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        sa.sin_port = htons((uint16_t)p);
-        int r = bind(fd, (struct sockaddr *)&sa, sizeof(sa));
-        close(fd);
-        if (r < 0) return 0;
-    }
-    return 1;
-}
-
-static pjmedia_transport *on_create_media_transport(pjsua_call_id call_id,
-                                                     unsigned media_idx,
-                                                     pjmedia_transport *base_tp,
-                                                     unsigned flags)
-{
-    (void)call_id; (void)media_idx; (void)flags;
-    return base_tp;
 }
 
 /* ================================================================== */
@@ -832,7 +578,7 @@ static void on_call_media_state(pjsua_call_id call_id)
     CallCtxEx *ctx = find_ctx(call_id);
     if (!ctx) return;
 
-    LOG(OBD_LOG_TRACE, g_tag, ctx->req.request_id, "leg_media_change",
+    LOG(g_tag, ctx->req.request_id, "leg_media_change",
         ",\"call_id\":%d,\"media_status\":%d,\"status_name\":\"%s\"",
         call_id, ci.media_status,
         (ci.media_status == PJSUA_CALL_MEDIA_NONE ? "NONE" :
@@ -851,13 +597,6 @@ int sip_engine_init(WorkerConfig *cfg, LFQueue *compq, void (*signal_fn)(void))
     snprintf(g_tag, sizeof(g_tag), "w%d", cfg->worker_id);
 
     slab_init();
-    LOG(OBD_LOG_INFO, g_tag, "", "obd_version", ",\"version\":\"%s\"", obd_version + 12); /* skip OBD-VERSION: prefix */
-    /* Seed RTP cursor at worker's rank offset so workers on the same IP
-     * start at different port positions and don't collide at burst start. */
-    unsigned workers_per_ip_init = OBD_NUM_WORKERS / OBD_NUM_LOCAL_IPS;
-    unsigned worker_rank_init    = (unsigned)cfg->worker_id % workers_per_ip_init;  /* within-IP rank */
-    atomic_store(&g_rtp_port_cursor, (worker_rank_init * 4) % 
-                 (((65535 - cfg->rtp_base_port) / workers_per_ip_init) & ~1u));
 
     /* Crucial Diagnostic: Dump compile-time variables upon initialization */
 #ifdef PJ_IOQUEUE_MAX_HANDLERS
@@ -866,7 +605,7 @@ int sip_engine_init(WorkerConfig *cfg, LFQueue *compq, void (*signal_fn)(void))
     int current_max_handlers = -1;
 #endif
 
-    LOG(OBD_LOG_DEBUG, g_tag, "", "pjsip_compile_limits", 
+    LOG(g_tag, "", "pjsip_compile_limits", 
         ",\"PJSUA_MAX_CALLS\":%d,\"PJSUA_MAX_ACC\":%d,\"PJ_IOQUEUE_MAX_HANDLERS\":%d", 
         PJSUA_MAX_CALLS, PJSUA_MAX_ACC, current_max_handlers);
 
@@ -883,11 +622,10 @@ int sip_engine_init(WorkerConfig *cfg, LFQueue *compq, void (*signal_fn)(void))
     pj_cfg.outbound_proxy_cnt = 1;
     pj_cfg.outbound_proxy[0]  = pj_str(global_proxy);
 
-    pj_cfg.cb.on_call_state            = &on_call_state;
-    pj_cfg.cb.on_call_media_state       = &on_call_media_state;
-    pj_cfg.cb.on_call_tsx_state         = &on_call_tsx_state;
-    pj_cfg.cb.on_create_media_transport = &on_create_media_transport;
-    pj_cfg.max_calls              = PJSUA_MAX_CALLS;  /* use compiled max; internal slots linger during tsx teardown */
+    pj_cfg.cb.on_call_state       = &on_call_state;
+    pj_cfg.cb.on_call_media_state = &on_call_media_state;
+    pj_cfg.cb.on_call_tsx_state   = &on_call_tsx_state;
+    pj_cfg.max_calls              = OBD_CALLS_PER_WORKER;
     pj_cfg.stun_srv_cnt           = 0;
     pj_cfg.user_agent             = pj_str("CallCollectService");
     pj_cfg.thread_cnt             = 1;  /* 1 SIP worker thread per process, not 2 */
@@ -895,38 +633,24 @@ int sip_engine_init(WorkerConfig *cfg, LFQueue *compq, void (*signal_fn)(void))
     pjsua_logging_config log_cfg;
     pjsua_logging_config_default(&log_cfg);
     
-    log_cfg.level         = g_wcfg.sip_log_level >= 3 ? g_wcfg.sip_log_level : 3;
-    log_cfg.console_level = 0;   /* never mix PJSIP text into OBD JSON log */
-    /* Write PJSIP logs to a separate file to avoid corrupting OBD JSON log */
-    if (g_wcfg.log_file[0]) {
-        static char pjsip_log[OBD_LOG_FILE_MAX + 16];
-        snprintf(pjsip_log, sizeof(pjsip_log), "%s.pjsip", g_wcfg.log_file);
-        log_cfg.log_filename   = pj_str(pjsip_log);
-        log_cfg.log_file_flags = PJ_O_APPEND;
-        /* Touch the file so it exists even before first PJSIP log write */
-        FILE *f = fopen(pjsip_log, "a");
-        if (f) fclose(f);
-    }
+    log_cfg.level         = g_wcfg.sip_log_level;   /* ← from config */
+    log_cfg.console_level = g_wcfg.sip_log_level;   /* ← from config */
 
     pjsua_media_config med_cfg;
     pjsua_media_config_default(&med_cfg);
     med_cfg.no_vad            = PJ_TRUE;
     med_cfg.enable_ice        = PJ_FALSE;
     med_cfg.clock_rate        = 8000;
+    med_cfg.audio_frame_ptime = 20;
     med_cfg.max_media_ports   = OBD_CALLS_PER_WORKER * 2 + 4;
-    if (obd_flag_enabled(g_wcfg.use_rtp, 0)) {
-        med_cfg.audio_frame_ptime = 20;
-        med_cfg.has_ioqueue       = PJ_TRUE;
-        med_cfg.thread_cnt        = 1;
+    if (obd_flag_enabled(cfg->use_rtp, 0)) {
+        med_cfg.has_ioqueue  = PJ_TRUE;   /* enable media ioqueue for RTP processing */
+        med_cfg.thread_cnt   = 1;         /* media clock thread needed for RTP timing */
     } else {
-        /* use_rtp=no: raise ptime to 100ms so pjsua_0 wakes 10x less often,
-         * disable pjmedia ioqueue to eliminate media thread work, thread_cnt=0
-         * to prevent media clock thread spawn. */
-        med_cfg.audio_frame_ptime = 100;
-        med_cfg.has_ioqueue       = PJ_FALSE;
-        med_cfg.thread_cnt        = 0;
+        med_cfg.has_ioqueue  = PJ_FALSE;  /* no RTP processing needed */
+        med_cfg.thread_cnt   = 0;         /* no media clock thread */
     }
-LOG(OBD_LOG_DEBUG, g_tag, "", "proxy_config_check",
+LOG(g_tag, "", "proxy_config_check",
     ",\"proxy_ptr\":\"%p\",\"proxy_val\":\"%.*s\",\"proxy_cnt\":%d",
     (void *)pj_cfg.outbound_proxy[0].ptr,
     (int)pj_cfg.outbound_proxy[0].slen,
@@ -952,29 +676,46 @@ LOG(OBD_LOG_DEBUG, g_tag, "", "proxy_config_check",
         return -1;
     }
 
-    /* Bind SIP transport on the pre-assigned port (sip_port_base + worker_id).
-     * Each worker has a unique port — no hunting needed. SO_REUSEADDR allows
-     * fast rebind after a clean restart without waiting for TIME_WAIT. */
+    /* Transport with dynamic port fallback / auto-hunting (OPT6-ext) */
     pjsua_transport_config tp_cfg;
     pjsua_transport_config_default(&tp_cfg);
-    tp_cfg.qos_type = PJ_QOS_TYPE_VOICE;
-    tp_cfg.port = cfg->sip_port;
-    if (cfg->local_ip[0]) {
-        tp_cfg.bound_addr  = pj_str(cfg->local_ip);
-        tp_cfg.public_addr = pj_str(cfg->local_ip);
+    
+    int base_port = cfg->sip_port;
+    int max_attempts = 100; /* Try up to 100 alternative ports in case of port allocation conflicts */
+    st = PJ_SUCCESS;
+
+    for (int attempt = 0; attempt < max_attempts; attempt++) {
+        tp_cfg.port = base_port + attempt;
+        if (cfg->local_ip[0]) {
+            tp_cfg.bound_addr  = pj_str(cfg->local_ip);
+            tp_cfg.public_addr = pj_str(cfg->local_ip);
+        }
+
+        st = pjsua_transport_create(PJSIP_TRANSPORT_UDP, &tp_cfg, NULL);
+        if (st == PJ_SUCCESS) {
+            /* Successfully bound! Update the config so our Contact / Via headers align correctly */
+            cfg->sip_port = tp_cfg.port;
+            g_wcfg.sip_port = tp_cfg.port;
+            LOG(g_tag, "", "sip_port_bound_success", 
+                ",\"target_port\":%d,\"actual_bound_port\":%d,\"advertised_port\":%d,\"attempts\":%d,\"use_mux\":\"%s\"", 
+                base_port, cfg->sip_port,
+                sip_mux_enabled() ? g_wcfg.sip_mux_port : cfg->sip_port,
+                attempt + 1, sip_mux_enabled() ? "yes" : "no");
+            break;
+        }
+
+        /* If the error is not 'Address already in use' (120098), fail immediately */
+        int os_err = (st >= 120000) ? (st - 120000) : (int)st;
+        if (os_err != EADDRINUSE) {
+            break;
+        }
     }
 
-    st = pjsua_transport_create(PJSIP_TRANSPORT_UDP, &tp_cfg, NULL);
     if (st != PJ_SUCCESS) {
         log_sip_init_failure("pjsua_transport_create", cfg, st);
         pjsua_destroy();
         return -1;
     }
-    LOG(OBD_LOG_INFO, g_tag, "", "sip_port_bound_success",
-        ",\"port\":%d,\"advertised_port\":%d,\"use_mux\":\"%s\"",
-        cfg->sip_port,
-        sip_mux_enabled() ? g_wcfg.sip_mux_port : cfg->sip_port,
-        sip_mux_enabled() ? "yes" : "no");
 
     st = pjsua_start();
     if (st != PJ_SUCCESS) {
@@ -983,16 +724,7 @@ LOG(OBD_LOG_DEBUG, g_tag, "", "proxy_config_check",
         return -1;
     }
 
-    /* When use_rtp=no: call pjsua_set_no_snd_dev() to disconnect the conference
-     * bridge from any sound device entirely. Without this, pjsua_start()
-     * auto-opens a sound device internally which spawns the media clock thread
-     * that wakes every 20ms burning CPU even with zero active calls.
-     * pjsua_set_null_snd_dev() also starts a clock thread — only set_no_snd_dev
-     * avoids it completely. */
-    if (obd_flag_enabled(g_wcfg.use_rtp, 0))
-        pjsua_set_null_snd_dev();
-    else
-        pjsua_set_no_snd_dev();
+    pjsua_set_null_snd_dev();
 
     /* Codecs: PCMU + telephone-event only */
     pj_str_t all_c = pj_str("*");
@@ -1010,27 +742,10 @@ LOG(OBD_LOG_DEBUG, g_tag, "", "proxy_config_check",
 /* ================================================================== */
 void sip_engine_dispatch(const OBDRequest *req)
 {
-    /* Capacity check BEFORE allocating any resources — avoids wasting slab/acc slots */
-    int active_calls = atomic_load(&g_active_calls);
-    if (active_calls >= OBD_CALLS_PER_WORKER) {
-        OBDReport report;
-        memset(&report, 0, sizeof(report));
-        strncpy(report.request_id, req->request_id, sizeof(report.request_id) - 1);
-        strncpy(report.called_msisdn, req->called_msisdn, sizeof(report.called_msisdn) - 1);
-        strncpy(report.calling_msisdn, req->calling_msisdn, sizeof(report.calling_msisdn) - 1);
-        report.outcome = OUTCOME_NETWORK_DOWN;
-        report.sip_final_status = 503;
-        lfq_push(g_compq, &report);
-        if (g_signal_report_fn) g_signal_report_fn();
-        LOG(OBD_LOG_WARN, g_tag, req->request_id, "local_capacity_reached",
-            ",\"active_calls\":%d,\"max_calls\":%d",
-            active_calls, OBD_CALLS_PER_WORKER);
-        return;
-    }
-
     CallCtxEx *ctx = slab_alloc();
     if (!ctx) {
-        LOG(OBD_LOG_ERROR, g_tag, req->request_id, "slab_alloc_failed", ",\"active_calls\":%d,\"max_calls\":%d", atomic_load(&g_active_calls), OBD_CALLS_PER_WORKER);
+        LOG(g_tag, req->request_id, "slab_alloc_failed", ",\"active_calls\":%d,\"max_calls\":%d", atomic_load(&g_active_calls), OBD_CALLS_PER_WORKER);
+        /* All slots busy — push reject report */
         OBDReport report;
         memset(&report, 0, sizeof(report));
         strncpy(report.request_id, req->request_id, sizeof(report.request_id) - 1);
@@ -1039,7 +754,6 @@ void sip_engine_dispatch(const OBDRequest *req)
         report.outcome = OUTCOME_NETWORK_DOWN;
         report.sip_final_status = 503;
         lfq_push(g_compq, &report);
-        if (g_signal_report_fn) g_signal_report_fn();
         return;
     }
 
@@ -1047,8 +761,9 @@ void sip_engine_dispatch(const OBDRequest *req)
     ctx->call_id = PJSUA_INVALID_ID;
     ctx->acc_id  = PJSUA_INVALID_ID;
     clock_gettime(CLOCK_MONOTONIC, &ctx->start_time);
-
-    LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_allocated", ",\"active_calls\":%d", atomic_load(&g_active_calls));
+    
+    /* Leg Creation Stage 1: Leg Allocated */
+    LOG(g_tag, ctx->req.request_id, "leg_allocated", ",\"active_calls\":%d", atomic_load(&g_active_calls));
 
     /* Determine dest */
     const char *dest = req->dest_id[0] ? req->dest_id : g_wcfg.default_proxy;
@@ -1063,10 +778,12 @@ void sip_engine_dispatch(const OBDRequest *req)
     /* Per-call account */
     pjsua_acc_config acc_cfg;
     pjsua_acc_config_default(&acc_cfg);
-    snprintf(ctx->from_uri, sizeof(ctx->from_uri), "\"+%s\" <sip:+%s@%s;user=phone>",
+    char from_uri[256];
+    snprintf(from_uri, sizeof(from_uri), "\"+%s\" <sip:+%s@%s;user=phone>",
              req->calling_msisdn, req->calling_msisdn,
              g_wcfg.local_ip[0] ? g_wcfg.local_ip : dest);
-    acc_cfg.id                  = pj_str(ctx->from_uri);
+    char contact_uri[256];
+    acc_cfg.id                  = pj_str(from_uri);
     acc_cfg.reg_uri             = pj_str("");
     acc_cfg.register_on_acc_add = PJ_FALSE;
     acc_cfg.cred_count          = 0;
@@ -1074,85 +791,33 @@ void sip_engine_dispatch(const OBDRequest *req)
                                    PJSUA_100REL_OPTIONAL : PJSUA_100REL_MANDATORY;
 
     if (sip_mux_enabled()) {
-        snprintf(ctx->contact_uri, sizeof(ctx->contact_uri), "<sip:CallCollectService@%s:%d>",
+        snprintf(contact_uri, sizeof(contact_uri), "<sip:CallCollectService@%s:%d>",
                  g_wcfg.local_ip[0] ? g_wcfg.local_ip : "127.0.0.1", g_wcfg.sip_mux_port);
-        acc_cfg.force_contact = pj_str(ctx->contact_uri);
+        acc_cfg.force_contact = pj_str(contact_uri);
     } else if (g_wcfg.local_ip[0]) {
-        snprintf(ctx->contact_uri, sizeof(ctx->contact_uri), "<sip:CallCollectService@%s:%d>",
+        snprintf(contact_uri, sizeof(contact_uri), "<sip:CallCollectService@%s:%d>",
                  g_wcfg.local_ip, g_wcfg.sip_port);
-        acc_cfg.force_contact = pj_str(ctx->contact_uri);
+        acc_cfg.force_contact = pj_str(contact_uri);
     }
 
-    /* RTP port block: non-overlapping per worker within its IP group. */
-    unsigned workers_per_ip;
-    unsigned worker_rank;
-    if (strncmp(g_wcfg.rtp_ip, "127.0.0.", 8) == 0) {
-        workers_per_ip = OBD_NUM_WORKERS / OBD_NUM_LOCAL_IPS;
-        worker_rank = (unsigned)g_wcfg.worker_id % workers_per_ip;  /* within-IP rank, not IP index */
+    /* RTP port: use config base + per-worker offset to avoid collisions */
+    if (obd_flag_enabled(g_wcfg.use_rtp, 0)) {
+        acc_cfg.rtp_cfg.port       = g_wcfg.rtp_base_port + (g_wcfg.worker_id * 2);
+        acc_cfg.rtp_cfg.port_range = 1;
     } else {
-        workers_per_ip = OBD_NUM_WORKERS;
-        worker_rank = (unsigned)g_wcfg.worker_id;
+        acc_cfg.rtp_cfg.port       = 20000 + (g_wcfg.worker_id * 2); /* bind for SDP only */
+        acc_cfg.rtp_cfg.port_range = 1;
     }
-    const unsigned available_ports = 65535 - g_wcfg.rtp_base_port;
-    const unsigned rtp_ports_per_worker = (available_ports / workers_per_ip) & ~1u;
-    const unsigned rtp_base = g_wcfg.rtp_base_port + (worker_rank * rtp_ports_per_worker);
-
-    /* Find a free RTP port pair by probing from the cursor position.
-     * Advance cursor by 2 each probe to stay on even-aligned pairs.
-     * Cap search at rtp_ports_per_worker/2 attempts to avoid infinite loop. */
-    unsigned rtp_port = 0;
-    unsigned max_probes = rtp_ports_per_worker / 2;
-    for (unsigned probe = 0; probe < max_probes; probe++) {
-        unsigned cursor = atomic_fetch_add(&g_rtp_port_cursor, 2) % rtp_ports_per_worker;
-        cursor &= ~1u;
-        unsigned candidate = rtp_base + cursor;
-        if (candidate + 1 > 65534) continue;
-        if (rtp_port_free(g_wcfg.rtp_ip, (int)candidate)) {
-            rtp_port = candidate;
-            break;
-        }
-    }
-
-    if (rtp_port == 0) {
-        LOG(OBD_LOG_WARN, g_tag, req->request_id, "rtp_no_free_port",
-            ",\"rtp_base\":%u,\"range\":%u", rtp_base, rtp_ports_per_worker);
-    }
-
-    acc_cfg.rtp_cfg.port           = rtp_port ? (int)rtp_port : (int)rtp_base;
-    acc_cfg.rtp_cfg.port_range     = rtp_port ? 0 : 1;
-    acc_cfg.rtp_cfg.bound_addr     = pj_str(g_wcfg.rtp_ip);
-    acc_cfg.rtp_cfg.randomize_port = PJ_FALSE;
-    acc_cfg.media_stun_use         = PJSUA_STUN_USE_DISABLED;
-    acc_cfg.call_hold_type         = PJSUA_CALL_HOLD_TYPE_RFC3264;
-
-
-    /* Guard: pjsua_acc_add() hard-asserts (abort) if acc table is full.
-     * Pre-check with atomic counter to reject gracefully before that happens. */
-    if (atomic_load(&g_active_accs) >= PJSUA_MAX_ACC - 1) {
-        OBDReport report;
-        memset(&report, 0, sizeof(report));
-        strncpy(report.request_id, req->request_id, sizeof(report.request_id) - 1);
-        strncpy(report.called_msisdn, req->called_msisdn, sizeof(report.called_msisdn) - 1);
-        strncpy(report.calling_msisdn, req->calling_msisdn, sizeof(report.calling_msisdn) - 1);
-        report.outcome = OUTCOME_NETWORK_DOWN;
-        report.sip_final_status = 503;
-        lfq_push(g_compq, &report);
-        LOG(OBD_LOG_WARN, g_tag, req->request_id, "acc_pool_full",
-            ",\"active_accs\":%d,\"max_acc\":%d",
-            atomic_load(&g_active_accs), PJSUA_MAX_ACC);
-        atomic_fetch_sub(&g_active_calls, 1);
-        slab_free(ctx);
-        return;
-    }
-    atomic_fetch_add(&g_active_accs, 1);
+    acc_cfg.media_stun_use     = PJSUA_STUN_USE_DISABLED;
+    acc_cfg.call_hold_type     = PJSUA_CALL_HOLD_TYPE_RFC3264;
 
     pj_status_t st = pjsua_acc_add(&acc_cfg, PJ_FALSE, &ctx->acc_id);
     if (st == PJ_SUCCESS) {
         /* Leg Creation Stage 2: Account Registered */
-        LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_acc_added", ",\"acc_id\":%d", ctx->acc_id);
+        LOG(g_tag, ctx->req.request_id, "leg_acc_added", ",\"acc_id\":%d", ctx->acc_id);
     } else {
-        atomic_fetch_sub(&g_active_accs, 1);
         char errbuf[128];
+        int active_calls = atomic_load(&g_active_calls);
         OBDReport report;
         memset(&report, 0, sizeof(report));
         strncpy(report.request_id, req->request_id, sizeof(report.request_id) - 1);
@@ -1161,10 +826,12 @@ void sip_engine_dispatch(const OBDRequest *req)
         report.outcome = OUTCOME_NETWORK_DOWN;
         report.sip_final_status = 503;
         lfq_push(g_compq, &report);
-        LOG(OBD_LOG_ERROR, g_tag, req->request_id, "leg_acc_add_failed",
+        
+        /* Critical failure log when PJSIP Account capacity limit is reached */
+        LOG(g_tag, req->request_id, "leg_acc_add_failed",
             ",\"status\":%d,\"reason\":\"%s\",\"active_calls\":%d,\"max_acc_limit\":%d",
-            st, pj_status_text(st, errbuf, sizeof(errbuf)), atomic_load(&g_active_calls), PJSUA_MAX_ACC);
-        atomic_fetch_sub(&g_active_calls, 1);
+            st, pj_status_text(st, errbuf, sizeof(errbuf)), active_calls, PJSUA_MAX_ACC);
+            
         slab_free(ctx);
         return;
     }
@@ -1193,24 +860,39 @@ void sip_engine_dispatch(const OBDRequest *req)
     pjsua_call_setting_default(&call_opt);
     call_opt.aud_cnt = 1;
     call_opt.vid_cnt = 0;
-    call_opt.txt_cnt = 0;
-    call_opt.flag |= PJSUA_CALL_SET_MEDIA_DIR;
     if (obd_flag_enabled(g_wcfg.use_rtp, 0)) {
-        /* use_rtp=yes: a=sendrecv — RTP flows in both directions. */
+        /* use_rtp=yes: sendrecv — RTP flows in both directions */
+        call_opt.flag |= PJSUA_CALL_SET_MEDIA_DIR;
         call_opt.media_dir[0] = PJMEDIA_DIR_ENCODING_DECODING;
     } else {
-        /* use_rtp=no: a=recvonly — receive ringback/early media without sending RTP. */
-        call_opt.media_dir[0] = PJMEDIA_DIR_DECODING;
+        /* use_rtp=no: inactive — SDP negotiated but no RTP packets sent/received */
+        call_opt.flag |= PJSUA_CALL_SET_MEDIA_DIR;
+        call_opt.media_dir[0] = PJMEDIA_DIR_NONE;
+    }
+
+    int active_calls = atomic_load(&g_active_calls);
+    if (active_calls >= OBD_CALLS_PER_WORKER) {
+        OBDReport report;
+        memset(&report, 0, sizeof(report));
+        strncpy(report.request_id, req->request_id, sizeof(report.request_id) - 1);
+        strncpy(report.called_msisdn, req->called_msisdn, sizeof(report.called_msisdn) - 1);
+        strncpy(report.calling_msisdn, req->calling_msisdn, sizeof(report.calling_msisdn) - 1);
+        report.outcome = OUTCOME_NETWORK_DOWN;
+        report.sip_final_status = 503;
+        lfq_push(g_compq, &report);
+        LOG(g_tag, req->request_id, "local_capacity_reached",
+            ",\"active_calls\":%d,\"max_calls\":%d",
+            active_calls, OBD_CALLS_PER_WORKER);
+        pjsua_acc_del(ctx->acc_id);
+        ctx->acc_id = PJSUA_INVALID_ID;
+        slab_free(ctx);
+        return;
     }
 
     /* Leg Creation Stage 3: Attempting Outbound Invite */
-    LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "leg_invite_initiating",
-        ",\"target\":\"%s\",\"from\":\"%s\",\"acc_id\":%d"
-        ",\"active_calls\":%d,\"active_accs\":%d,\"pjsua_call_count\":%d,\"pjsua_max_calls\":%d",
-        req->called_msisdn, req->calling_msisdn, ctx->acc_id,
-        atomic_load(&g_active_calls), atomic_load(&g_active_accs),
-        (int)pjsua_call_get_count(), PJSUA_MAX_CALLS);
-
+    LOG(g_tag, ctx->req.request_id, "leg_invite_initiating", 
+        ",\"target_uri\":\"%s\",\"from_uri\":\"%s\",\"acc_id\":%d", target_uri, from_uri, ctx->acc_id);
+        
     st = pjsua_call_make_call(ctx->acc_id, &dst, &call_opt, NULL, &msg_data, &ctx->call_id);
     if (st != PJ_SUCCESS) {
         char errbuf[128];
@@ -1222,19 +904,13 @@ void sip_engine_dispatch(const OBDRequest *req)
         report.outcome = OUTCOME_NETWORK_DOWN;
         report.sip_final_status = 503;
         lfq_push(g_compq, &report);
-
-        LOG(OBD_LOG_ERROR, g_tag, req->request_id, "leg_invite_failed",
-            ",\"status\":%d,\"reason\":\"%s\""
-            ",\"active_calls\":%d,\"active_accs\":%d"
-            ",\"pjsua_call_count\":%d,\"pjsua_max_calls\":%d",
-            st, pj_status_text(st, errbuf, sizeof(errbuf)),
-            atomic_load(&g_active_calls), atomic_load(&g_active_accs),
-            (int)pjsua_call_get_count(), PJSUA_MAX_CALLS);
+        
+        LOG(g_tag, req->request_id, "leg_invite_failed",
+            ",\"status\":%d,\"reason\":\"%s\",\"active_calls\":%d",
+            st, pj_status_text(st, errbuf, sizeof(errbuf)), active_calls);
             
         pjsua_acc_del(ctx->acc_id);
-        atomic_fetch_sub(&g_active_accs, 1);
         ctx->acc_id = PJSUA_INVALID_ID;
-        atomic_fetch_sub(&g_active_calls, 1);
         slab_free(ctx);
         return;
     }
@@ -1245,7 +921,7 @@ void sip_engine_dispatch(const OBDRequest *req)
     pj_timer_entry_init(&ctx->timer, 0, ctx, &on_timeout);
     pj_timer_heap_schedule(th, &ctx->timer, &delay);
     
-    LOG(OBD_LOG_INFO, g_tag, ctx->req.request_id, "call_make_success", ",\"call_id\":%d", ctx->call_id);
+    LOG(g_tag, ctx->req.request_id, "call_make_success", ",\"call_id\":%d", ctx->call_id);
 }
 
 void sip_engine_shutdown(void)

@@ -18,23 +18,29 @@
 /* ================================================================== */
 /* Compile-time constants (override via make tune)                      */
 /* ================================================================== */
+#ifndef OBD_NUM_LOCAL_IPS
+#define OBD_NUM_LOCAL_IPS       8      /* loopback IPs 127.0.0.1–127.0.0.10 */
+#endif
 #ifndef OBD_NUM_WORKERS
 #define OBD_NUM_WORKERS         4
 #endif
 #ifndef OBD_CALLS_PER_WORKER
-#define OBD_CALLS_PER_WORKER    2500
+#define OBD_CALLS_PER_WORKER    125
 #endif
 #ifndef OBD_DISPATCH_THREADS
 #define OBD_DISPATCH_THREADS    2
 #endif
+#ifndef OBD_ROUTING_THREADS
+#define OBD_ROUTING_THREADS     6
+#endif
 #ifndef OBD_REPORT_THREADS
-#define OBD_REPORT_THREADS      4
+#define OBD_REPORT_THREADS      1
 #endif
 #ifndef OBD_COMPQ_SIZE
 #define OBD_COMPQ_SIZE          16384   /* must be power of 2 */
 #endif
 #ifndef OBD_DEFAULT_TIMEOUT
-#define OBD_DEFAULT_TIMEOUT     15
+#define OBD_DEFAULT_TIMEOUT     8
 #endif
 #ifndef OBD_UDP_LISTEN_PORT
 #define OBD_UDP_LISTEN_PORT     9090
@@ -145,13 +151,15 @@ typedef struct {
 /* ================================================================== */
 typedef struct {
     int  worker_id;
+    int  routing_threads;   /* dispatcher routing thread count */
     int  sip_port;
     int  sip_port_base;
     int  sip_mux_port;
     int  proxy_port;
     int  heartbeat_port;
     int  rtp_base_port;
-    char local_ip[64];
+    char local_ip[64];      /* SIP transport bind IP */
+    char rtp_ip[64];        /* RTP bind IP (loopback pool for port isolation) */
     char report_ip[64];
     int  report_port;
     int  cpu_core;
@@ -239,16 +247,26 @@ static inline int lfq_pop(LFQueue *q, OBDReport *report)
 /* ================================================================== */
 /* Structured JSON Logging (OPT9)                                      */
 /* ================================================================== */
+
+/* Log levels: 1=ERROR 2=WARN 3=INFO 4=DEBUG 5=TRACE */
+#define OBD_LOG_ERROR  1
+#define OBD_LOG_WARN   2
+#define OBD_LOG_INFO   3
+#define OBD_LOG_DEBUG  4
+#define OBD_LOG_TRACE  5
+
 int obd_log_init(const char *path);
 void obd_log_set_rotation(size_t max_size_bytes, int max_backups);
+void obd_log_set_level(int min_level);   /* 1=ERROR 2=WARN 3=INFO 4=DEBUG 5=TRACE */
 const char *obd_log_path(void);
+void obd_log_reopen_lock(void);
 void obd_log_close(void);
-void obd_log_write_json(const char *file, int line, const char *worker_tag,
-                        const char *req_id, const char *event,
-                        const char *fmt, ...);
+void obd_log_write_json(const char *file, int line, int level,
+                        const char *worker_tag, const char *req_id,
+                        const char *event, const char *fmt, ...);
 
-#define LOG(worker_tag, req_id, event, ...) \
-    obd_log_write_json(__FILE__, __LINE__, (worker_tag), (req_id), (event), __VA_ARGS__)
+#define LOG(level, worker_tag, req_id, event, ...) \
+    obd_log_write_json(__FILE__, __LINE__, (level), (worker_tag), (req_id), (event), __VA_ARGS__)
 
 /* ================================================================== */
 /* Module interfaces                                                    */
@@ -267,6 +285,7 @@ void worker_run(WorkerConfig *cfg);
 int  sip_engine_init(WorkerConfig *cfg, LFQueue *compq, void (*signal_fn)(void));
 void sip_engine_dispatch(const OBDRequest *req);
 void sip_engine_log_health(void);
+void sip_engine_reap_orphans(void);
 void sip_engine_shutdown(void);
 
 /* dedup.c */

@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
 OBD traffic analyzer — reads obd_runtime.log + all rotated backups.
-Usage: python3 analyze.py [logfile] [--norot] [--total N]
-  --norot    : current file only, skip rotated .1 .2 ...
-  --total N  : total requests sent by sender (for receipt gap analysis)
+Usage: python3 analyze.py [logfile] [--norot] [--total N] [--seq] [--udp-drop]
+  --norot      : current file only, skip rotated .1 .2 ...
+  --total N    : total requests sent by sender (for receipt gap analysis)
+  --seq        : scan request_id sequence for gaps (network-level drops)
+  --udp-drop   : show kernel UDP socket drop counters via /proc/net/udp
 """
 import json, collections, sys, os, glob
 
 log      = next((a for a in sys.argv[1:] if not a.startswith("--")), "/var/log/obd/obd_runtime.log")
-no_rot   = "--norot" in sys.argv
+no_rot     = "--norot" in sys.argv
+check_seq  = "--seq" in sys.argv
+udp_drop   = "--udp-drop" in sys.argv
 total_sent = next((int(sys.argv[i+1]) for i, a in enumerate(sys.argv) if a == "--total" and i+1 < len(sys.argv)), None)
+max_level  = next((int(sys.argv[i+1]) for i, a in enumerate(sys.argv) if a == "--level" and i+1 < len(sys.argv)), 5)
 
 if not os.path.exists(log):
     print(f"File not found: {log}"); sys.exit(1)
@@ -48,6 +53,7 @@ drops = [
 counts           = collections.Counter()
 first_dt         = {}
 last_dt          = {}
+received_seq_ids = []   # request_ids seen at 'received' event, for gap analysis
 workers          = collections.Counter()
 outcomes         = collections.Counter()
 sip_codes        = collections.Counter()
@@ -78,13 +84,20 @@ for log_file in log_files:
             ev = obj.get("ev", "")
             dt = obj.get("dt", "")
             w  = obj.get("w", "")
+            ll = obj.get("ll", 3)   # default INFO if field absent (old logs)
             if not ev:
+                continue
+            if ll > max_level:
                 continue
             counts[ev] += 1
             if ev not in first_dt:
                 first_dt[ev] = dt
             last_dt[ev] = dt
 
+            if ev == "received" and check_seq:
+                rid = obj.get("request_id", "")
+                if rid:
+                    received_seq_ids.append(rid)
             if ev == "invite_sent" and w:
                 workers[w] += 1
             elif ev == "routed" and dt:
@@ -113,6 +126,139 @@ for log_file in log_files:
             elif ev == "leg_teardown_initiating":
                 teardown_triggers[obj.get("trigger", "?")] += 1
 
+# ── NETWORK-LEVEL DROP DETECTION (sequence gap analysis) ────────────
+if check_seq and received_seq_ids:
+    print("=== NETWORK-LEVEL DROP DETECTION (--seq) ===")
+    # Extract numeric suffix from request_id (e.g. "req-000042" → 42, or pure int)
+    def extract_seq(rid):
+        parts = rid.replace("-", " ").replace("_", " ").split()
+        for p in reversed(parts):
+            if p.isdigit():
+                return int(p)
+        return None
+
+    seqs = []
+    non_numeric = 0
+    for rid in received_seq_ids:
+        n = extract_seq(rid)
+        if n is not None:
+            seqs.append(n)
+        else:
+            non_numeric += 1
+
+    if non_numeric:
+        print(f"  WARNING: {non_numeric:,} request_ids have no numeric suffix — gap check may be incomplete")
+
+    if seqs:
+        seqs.sort()
+        lo, hi = seqs[0], seqs[-1]
+        expected = set(range(lo, hi + 1))
+        seen     = set(seqs)
+        gaps     = sorted(expected - seen)
+        dupes    = len(seqs) - len(seen)
+        print(f"  Sequence range   : {lo} → {hi}  (span={hi-lo+1:,})")
+        print(f"  Received         : {len(seen):,} unique")
+        print(f"  Gaps (missing)   : {len(gaps):,}  ({len(gaps)/(hi-lo+1)*100:.2f}% of span)")
+        if dupes:
+            print(f"  Duplicates       : {dupes:,}")
+        if gaps:
+            # Show first 20 gap ranges
+            ranges, start, prev = [], gaps[0], gaps[0]
+            for g in gaps[1:]:
+                if g == prev + 1:
+                    prev = g
+                else:
+                    ranges.append((start, prev))
+                    start = prev = g
+            ranges.append((start, prev))
+            print(f"  First 20 gap ranges:")
+            for s, e in ranges[:20]:
+                if s == e:
+                    print(f"    missing seq {s}")
+                else:
+                    print(f"    missing seq {s}–{e}  ({e-s+1} consecutive)")
+            if len(ranges) > 20:
+                print(f"    ... and {len(ranges)-20} more ranges")
+    print()
+
+# ── UDP SOCKET DROP COUNTERS (/proc/net/udp) ─────────────────────────
+if udp_drop:
+    print("=== UDP SOCKET DROP COUNTERS (/proc/net/udp) ===")
+
+    def parse_proc_udp(path):
+        """Parse /proc/net/udp or /proc/net/udp6. Returns list of (port, recv_q, drops)."""
+        rows = []
+        try:
+            with open(path) as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) < 13 or not parts[1][0].isdigit():
+                        continue  # skip header
+                    local = parts[1]          # hex IP:PORT
+                    recv_q_hex = parts[4]     # hex recv_q:send_q
+                    drops = int(parts[12])    # column 13 (0-indexed 12)
+                    port = int(local.split(":")[1], 16)
+                    recv_q = int(recv_q_hex.split(":")[0], 16)
+                    rows.append((port, recv_q, drops))
+        except FileNotFoundError:
+            pass
+        return rows
+
+    total_drops = 0
+    total_recvq = 0
+    any_found   = False
+
+    for proc_file in ("/proc/net/udp", "/proc/net/udp6"):
+        rows = parse_proc_udp(proc_file)
+        if not rows:
+            continue
+        any_found = True
+        file_drops = sum(d for _, _, d in rows)
+        file_recvq = sum(r for _, r, _ in rows)
+        total_drops += file_drops
+        total_recvq += file_recvq
+        nonzero = [(p, r, d) for p, r, d in rows if d > 0 or r > 0]
+        print(f"  {proc_file}: {len(rows)} sockets, total_drops={file_drops:,}, total_recv_q={file_recvq:,}")
+        if nonzero:
+            print(f"    {'Port':>6}  {'Recv-Q':>8}  {'Drops':>8}")
+            for port, rq, dr in sorted(nonzero, key=lambda x: -x[2])[:20]:
+                print(f"    {port:>6}  {rq:>8,}  {dr:>8,}")
+        else:
+            print(f"    (no sockets with drops or backlog)")
+
+    if not any_found:
+        print("  /proc/net/udp not found — run this on the Linux server, not locally")
+        print("  Manual commands to run on server:")
+        print("    awk 'NR>1 {drops+=$13} END {print \"total UDP drops:\", drops}' /proc/net/udp")
+        print("    awk 'NR>1 {if($13>0) printf \"port=%d drops=%d\\n\",strtonum(\"0x\"substr($2,index($2,\":\")+1)),$13}' /proc/net/udp")
+        print("    cat /proc/net/snmp | grep -E '^Udp:'")
+    else:
+        print(f"  TOTAL across all UDP sockets: drops={total_drops:,}  recv_q={total_recvq:,}")
+        # Also show global kernel UDP error counters from /proc/net/snmp
+        try:
+            with open("/proc/net/snmp") as f:
+                snmp = f.read()
+            keys_line = vals_line = ""
+            for line in snmp.splitlines():
+                if line.startswith("Udp:"):
+                    if not keys_line:
+                        keys_line = line
+                    else:
+                        vals_line = line
+                        break
+            if keys_line and vals_line:
+                keys = keys_line.split()[1:]
+                vals = vals_line.split()[1:]
+                snmp_map = dict(zip(keys, vals))
+                interesting = ["InErrors", "RcvbufErrors", "InDatagrams", "NoPorts", "IgnoredMulti"]
+                print(f"  /proc/net/snmp (global UDP counters):")
+                for k in interesting:
+                    if k in snmp_map:
+                        print(f"    {k:<20}: {int(snmp_map[k]):>12,}")
+        except FileNotFoundError:
+            pass
+    print()
+
 # ── RECEIPT GAP ─────────────────────────────────────────────────────
 print("=== MESSAGE RECEIPT ANALYSIS ===")
 sent_by_sender  = total_sent
@@ -121,11 +267,18 @@ routed          = counts["routed"]
 received        = counts["invite_sent"]
 completed       = counts["sent"]
 
+# Peak pktq_dropped from dispatcher_rate snapshots
+peak_pktq_dropped = max((int(r.get("pktq_dropped", 0)) for r in dispatcher_rates), default=0)
+
 if sent_by_sender:
     not_received = sent_by_sender - received_disp
     print(f"  Sent by load generator          : {sent_by_sender:>10,}")
     print(f"  Received at dispatcher          : {received_disp:>10,}  ({received_disp/sent_by_sender*100:.1f}% of sent)")
     print(f"  NOT received at dispatcher      : {not_received:>10,}  ({not_received/sent_by_sender*100:.1f}% lost before OBD)")
+    if peak_pktq_dropped:
+        print(f"  Peak pktq_dropped (queue full)  : {peak_pktq_dropped:>10,}  ← packets dropped before routing")
+    else:
+        print(f"  Peak pktq_dropped (queue full)  : {peak_pktq_dropped:>10,}  (none — queue never overflowed)")
 else:
     print(f"  Received at dispatcher          : {received_disp:>10,}  (pass --total N to show sender gap)")
     print(f"  Routed to worker                : {routed:>10,}")
@@ -158,6 +311,15 @@ if total_in:
 print()
 
 # ── FUNNEL ──────────────────────────────────────────────────────────
+# Map each funnel stage to the drop events that consume requests between
+# this stage and the next, so gaps are explained inline.
+stage_drops = {
+    "invite_sent":           ["local_capacity_reached", "slab_alloc_failed"],
+    "leg_allocated":         ["acc_pool_full"],
+    "leg_acc_added":         ["leg_acc_add_failed"],
+    "leg_invite_initiating": ["leg_invite_failed"],
+}
+
 print("=== INVITE FUNNEL ===")
 prev = None
 for ev, label in pipeline:
@@ -168,6 +330,11 @@ for ev, label in pipeline:
         pct  = (n / prev * 100) if prev else 0
         flag = "  <<<" if pct < 90 and prev > 100 else ""
         print(f"  {label:<40}: {n:>10,}  ({pct:.1f}% of prev){flag}")
+        # Show which drop events account for the gap at this stage
+        for dev in stage_drops.get(ev, []):
+            dc = counts[dev]
+            if dc:
+                print(f"    └─ {dev:<36}: {dc:>10,}")
     if n > 0:
         prev = n
 

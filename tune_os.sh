@@ -10,9 +10,9 @@ echo "=== OBD OS Tuning ==="
 ulimit -n 131072
 echo "  ulimit -n: 131072"
 
-# Thread stack size (512KB instead of 8MB default)
-ulimit -s 512
-echo "  ulimit -s: 512"
+# Thread stack size — keep at 2MB (512KB is too small for PJSIP init stack frames)
+ulimit -s 2048
+echo "  ulimit -s: 2048"
 
 # Sysctl tuning
 sysctl -w net.core.rmem_max=16777216 >/dev/null

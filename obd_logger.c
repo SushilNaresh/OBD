@@ -20,15 +20,8 @@ static char g_log_path[OBD_LOG_FILE_MAX];
 static char g_lock_path[OBD_LOG_FILE_MAX + 8];
 static size_t g_log_max_size = OBD_LOG_ROTATE_SIZE;
 static int g_log_max_backups = OBD_LOG_ROTATE_COUNT;
+static int g_log_min_level = OBD_LOG_TRACE;  /* default: emit everything */
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static size_t get_file_size(int fd)
-{
-    struct stat st;
-    if (fstat(fd, &st) == 0)
-        return (size_t)st.st_size;
-    return 0;
-}
 
 static void rotate_logs(void)
 {
@@ -94,6 +87,12 @@ int obd_log_init(const char *path)
     return 0;
 }
 
+void obd_log_set_level(int min_level)
+{
+    if (min_level >= OBD_LOG_ERROR && min_level <= OBD_LOG_TRACE)
+        g_log_min_level = min_level;
+}
+
 void obd_log_set_rotation(size_t max_size_bytes, int max_backups)
 {
     if (max_size_bytes > 0)
@@ -105,6 +104,19 @@ void obd_log_set_rotation(size_t max_size_bytes, int max_backups)
 const char *obd_log_path(void)
 {
     return g_log_path[0] ? g_log_path : NULL;
+}
+
+void obd_log_reopen_lock(void)
+{
+    /* After fork(), all siblings share the parent's open file description for
+     * g_lock_fd. flock() on a shared file description provides NO mutual
+     * exclusion between processes — they all hold the lock simultaneously.
+     * Each worker must call this to get its own independent fd. */
+    if (g_lock_path[0]) {
+        if (g_lock_fd >= 0)
+            close(g_lock_fd);
+        g_lock_fd = open(g_lock_path, O_CREAT | O_WRONLY, 0644);
+    }
 }
 
 void obd_log_close(void)
@@ -120,10 +132,13 @@ void obd_log_close(void)
     g_log_path[0] = '\0';
 }
 
-void obd_log_write_json(const char *file, int line, const char *worker_tag,
-                        const char *req_id, const char *event,
-                        const char *fmt, ...)
+void obd_log_write_json(const char *file, int line, int level,
+                        const char *worker_tag, const char *req_id,
+                        const char *event, const char *fmt, ...)
 {
+    if (level > g_log_min_level)
+        return;
+
     char buf[4096];
     int off;
     va_list ap;
@@ -146,8 +161,8 @@ void obd_log_write_json(const char *file, int line, const char *worker_tag,
     }
 
     off = snprintf(buf, sizeof(buf),
-        "{\"dt\":\"%s\",\"file\":\"%s\",\"line\":%d,\"ts\":%ld,\"pid\":%ld,\"w\":\"%s\",\"req\":\"%s\",\"ev\":\"%s\"",
-        datetime,
+        "{\"dt\":\"%s\",\"ll\":%d,\"file\":\"%s\",\"line\":%d,\"ts\":%ld,\"pid\":%ld,\"w\":\"%s\",\"req\":\"%s\",\"ev\":\"%s\"",
+        datetime, level,
         basename ? basename : "", line, (long)ts.tv_sec, (long)getpid(),
         worker_tag ? worker_tag : "", req_id ? req_id : "", event ? event : "");
 
@@ -189,13 +204,21 @@ void obd_log_write_json(const char *file, int line, const char *worker_tag,
         g_log_fd != STDOUT_FILENO && g_log_fd != STDERR_FILENO &&
         g_lock_fd >= 0) {
         flock(g_lock_fd, LOCK_EX);
-        /* Recheck size after acquiring lock — another process may have rotated */
-        struct stat st;
-        if (fstat(g_log_fd, &st) != 0 || st.st_nlink == 0) {
-            /* Our fd was rotated away by another process — reopen */
+        /* Recheck after acquiring lock — another process may have rotated */
+        struct stat st_fd, st_path;
+        int rotated_away = (fstat(g_log_fd, &st_fd) != 0);
+        if (!rotated_away) {
+            /* Detect rename: compare inode of our fd vs the live log path */
+            if (stat(g_log_path, &st_path) != 0 ||
+                st_path.st_ino != st_fd.st_ino) {
+                rotated_away = 1;
+            }
+        }
+        if (rotated_away) {
+            /* Another process rotated — reopen the current log */
             int new_fd = open(g_log_path, O_CREAT | O_WRONLY | O_APPEND, 0644);
             if (new_fd >= 0) { close(g_log_fd); g_log_fd = new_fd; }
-        } else if ((size_t)st.st_size + len > g_log_max_size) {
+        } else if ((size_t)st_fd.st_size + len > g_log_max_size) {
             rotate_logs();
         }
         flock(g_lock_fd, LOCK_UN);
